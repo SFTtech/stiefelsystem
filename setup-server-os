@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""
+script to prepare your OS for being stiefeled.
+"""
+import argparse
+import json
+import os
+import shutil
+
+from config import CONFIG as cfg
+from util import (
+    command,
+    ensure_root,
+    ensure_unit_enabled,
+    FileEditor,
+    install_folder,
+)
+
+ensure_root()
+cli = argparse.ArgumentParser()
+args = cli.parse_args()
+
+
+def get_kernel_path():
+    """
+    returns the path on the boot part of the kernel that should be stiefeled
+    """
+    if 'system-arch' in cfg.modules:
+        return 'vmlinuz-linux'
+    else:
+        raise RuntimeError("no system- module was given")
+
+
+def get_initrd_path():
+    """
+    returns the path on the boot part of the initrd that should be stiefeled
+    """
+    if 'system-arch' in cfg.modules:
+        return 'initramfs-stiefel.img'
+    else:
+        raise RuntimeError("could not find the kernel")
+
+
+# ensure that all required tools are installed
+if shutil.which('ifrename') is None:
+    raise RuntimeError("could not find ifrename")
+try:
+    import pyudev
+    del pyudev
+except ImportError:
+    raise RuntimeError("could not find pyudev") from None
+
+
+if 'base' in cfg.modules:
+    # base configuration (for all distros)
+    install_folder('overlays/server-os-generic')
+    ensure_unit_enabled('stiefel-autokexec.service')
+
+    stiefel_config = {
+        "srv-macs": cfg.net.macs,
+        "srv-ip": cfg.net.server_ip,
+        "bootdisk": cfg.boot.disk,
+        "bootpart": cfg.boot.part,
+        "kernel": get_kernel_path(),
+        "initrd": get_initrd_path(),
+        "stiefelsystem-kernel": cfg.server_setup.stiefelsystem_kernel,
+        "stiefelsystem-initrd": cfg.server_setup.stiefelsystem_initrd,
+    }
+    edit = FileEditor('/etc/stiefelsystem-config.json')
+    edit.set_data(json.dumps(stiefel_config, indent=4).encode() + b'\n')
+    edit.write()
+
+    edit = FileEditor(cfg.server_setup.stiefelsystem_initrd)
+    edit.load_from(os.path.join(cfg.path.work, 'initrd.cpio'))
+    edit.write()
+
+    edit = FileEditor(cfg.server_setup.stiefelsystem_kernel)
+    edit.load_from(os.path.join(cfg.path.initrd, 'vmlinuz'))
+    edit.write()
+
+if 'system-arch' in cfg.modules:
+    edit = FileEditor('/etc/mkinitcpio-stiefel.conf')
+    edit.load_from('/etc/mkinitcpio.conf')
+    changes = {'`which ifrename`': 'at-end'}
+    edit.edit_bash_list('BINARIES', changes)
+    changes = {'amdgpu': 'at-end', 'i915': 'at-end'}
+    if 'r8152' in cfg.modules:
+        changes['r8152'] = 'at-end'
+    edit.edit_bash_list('MODULES', changes)
+    changes = {'autodetect': 'remove'}
+    if 'nbd' in cfg.modules:
+        changes['nbd'] = 'before-fsck'
+    edit.edit_bash_list('HOOKS', changes)
+    edit.write()
+
+    edit = FileEditor('/etc/mkinitcpio.d/linux.preset')
+    edit.load()
+    edit.edit_bash_list('PRESETS', {'stiefel': 'at-end'})
+    edit.add_or_edit_var('stiefel_image', '/boot/initramfs-stiefel.img', add_prefix='\n')
+    edit.add_or_edit_var('stiefel_options', '-c /etc/mkinitcpio-stiefel.conf -S autodetect')
+    edit.write()
+
+    if 'nbd' in cfg.modules:
+        install_folder('overlays/server-os-arch-nbd')
+
+    command('mkinitcpio', '-p', 'linux')

@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+import argparse
+import os
+
+from config import CONFIG as cfg
+from util import (
+    command,
+    download_tar,
+    ensure_root,
+    initrd_write,
+    mount_tmpfs,
+    umount,
+)
+
+ensure_root()
+
+cli = argparse.ArgumentParser()
+cli.add_argument('--debian-mirror', default='http://mirror.stusta.de/debian/')
+args = cli.parse_args()
+
+# discard existing ramdisk content
+umount(cfg.path.initrd_devel)
+umount(cfg.path.work)
+# provide the various tmpfses
+mount_tmpfs(cfg.path.work)
+mount_tmpfs(cfg.path.cache)
+
+deb_packages = [
+    'ifrename',  # needed by the payload scripts
+    'iproute2',  # needed by the payload scripts
+    'kexec-tools',  # needed for booting the payload system
+    'linux-image-amd64',  # needed for booting the stiefel system
+    'python3',  # all payload scripts are written in Python3
+    'python3-pycryptodome',
+    'systemd-container',  # to allow launching inside nspawn during this script
+    'systemd-sysv',  # to provide symlinks in /sbin: init, poweroff, ...
+]
+if 'nbd' in cfg.modules:
+    deb_packages.extend(['nbd-client', 'nbd-server'])
+deb_packages.extend(cfg.initrd.include_packages)
+
+# perform initial setup
+command(
+    'debootstrap',
+    '--include=' + ','.join(deb_packages),
+    '--cache-dir=' + os.path.abspath(cfg.path.cache),
+    '--variant=minbase',
+    'stable',
+    cfg.path.initrd,
+    args.debian_mirror
+)
+
+# install our overlay
+command('cp', '-RT', 'overlays/initrd', cfg.path.initrd)
+
+# install the AES key
+if not os.path.exists('aes-key'):
+    print('generating new AES key')
+    with open('aes-key', 'wb') as fileobj:
+        fileobj.write(os.urandom(16))
+command('cp', 'aes-key', os.path.join(cfg.path.initrd, 'aeskey'))
+
+# set root password
+command(
+    'chpasswd',
+    nspawn=cfg.path.initrd,
+    stdin=f'root:{cfg.initrd.password}\n'
+)
+
+# set root shell
+command(
+    'chsh', '-s',
+    cfg.initrd.shell,
+    nspawn=cfg.path.initrd
+)
+
+# enable login from systemd-nspawn
+initrd_write('/etc/securetty', 'pts/0', append=True)
+
+# set the hostname
+initrd_write('/etc/hostname', 'stiefelsystem')
+
+# disable lidswitch handling...
+initrd_write('/etc/systemd/logind.conf',
+    'HandleSuspendKey=ignore',
+    'HandleHibernateKey=ignore',
+    'HandleLidSwitch=ignore',
+    'HandleLidSwitchExternalPower=ignore',
+    'HandleLidSwitchDocked=ignore',
+    append=True
+)
+
+# systemd configuration
+command('systemctl', 'set-default',
+    'multi-user.target',
+    nspawn=cfg.path.initrd
+)
+command('systemctl', 'enable',
+    'fake-entropy.service',
+    nspawn=cfg.path.initrd
+)
+command('systemctl', 'disable',
+    'rsyslog.service',
+    'cron.service',
+    'networking.service',
+    'kexec.service',
+    'kexec-load.service',
+    'machines.target',
+    'remote-fs.target',
+    nspawn=cfg.path.initrd
+)
+command('systemctl', 'mask',
+    'serial-getty@.service',
+    'apt-daily.timer',
+    'apt-daily-upgrade.timer',
+    'serial-getty@.service',
+    'systemd-journal-flush.service',
+    'systemd-timedated.service',
+    'systemd-timesyncd.service',
+    'systemd-tmpfiles-clean.timer',
+    'systemd-update-utmp.service',
+    'systemd-update-utmp-runlevel.service',
+    'time-sync.target',
+    nspawn=cfg.path.initrd
+)
+
+# stiefel configuration
+if 'nbd' in cfg.modules:
+    command('systemctl', 'disable', 'nbd-server.service', nspawn=cfg.path.initrd)
+    # the nbd server configuration will be generated on-the-fly
+
+# kernel name
+kernel_name = os.readlink(cfg.path.initrd + '/vmlinuz')[13:]
+
+# create devel overlay system which we'll use to compile a few things
+os.makedirs(cfg.path.initrd_devel, exist_ok=True)
+os.makedirs(cfg.path.initrd_devel + "-overlayfs-upperdir", exist_ok=True)
+os.makedirs(cfg.path.initrd_devel + "-overlayfs-workdir", exist_ok=True)
+
+command(
+    "mount",
+    "-t", "overlay",
+    "overlay",
+    "-o", ",".join([
+        f"lowerdir={os.path.abspath(cfg.path.initrd)}",
+        f"upperdir={os.path.abspath(cfg.path.initrd_devel + '-overlayfs-upperdir')}",
+        f"workdir={os.path.abspath(cfg.path.initrd_devel + '-overlayfs-workdir')}",
+    ]),
+    os.path.abspath(cfg.path.initrd_devel),
+)
+
+command('apt', 'update', nspawn=cfg.path.initrd_devel)
+command('apt', 'upgrade', nspawn=cfg.path.initrd_devel)
+command('apt', 'install', '-y',
+    'build-essential',
+    'git',
+    'linux-headers-amd64',
+    'kmod',
+    nspawn=cfg.path.initrd_devel
+)
+
+# compile and install  the userland driver for the clevo fan controller
+if 'clevo-fancontrol' in cfg.modules:
+    download_tar(
+        cfg.mod_config["clevo-fancontrol"].url,
+        os.path.join(cfg.path.initrd_devel, "root/fancontrol")
+    )
+    command('make', '-C', '/root/fancontrol', nspawn=cfg.path.initrd_devel)
+    command(
+        "cp",
+        cfg.path.initrd_devel + "/root/fancontrol/clevo-fancontrol",
+        cfg.path.initrd + "/usr/local/bin",
+    )
+    command(
+        "cp",
+        cfg.path.initrd_devel + "/root/fancontrol/clevo-fancontrol.service",
+        cfg.path.initrd + "/etc/systemd/system",
+    )
+    command('systemctl', 'enable',
+        'clevo-fancontrol.service',
+        nspawn=cfg.path.initrd
+    )
+
+if 'r8152' in cfg.modules:
+    download_tar(
+        cfg.mod_config["r8152"].url,
+        os.path.join(cfg.path.initrd_devel, "root/r8152")
+    )
+
+    command(
+        'make',
+        '-C', '/root/r8152',
+        f'KERNELDIR=/lib/modules/{kernel_name}/build',
+        'modules',
+        nspawn=cfg.path.initrd_devel
+    )
+    command(
+        "cp",
+        cfg.path.initrd_devel + "/root/r8152/r8152.ko",
+        cfg.path.initrd + f"/lib/modules/{kernel_name}/kernel/drivers/net/usb/",
+    )
+    command(
+        "cp",
+        cfg.path.initrd_devel + "/root/r8152/50-usb-realtek-net.rules",
+        cfg.path.initrd + "/etc/udev/rules.d/"
+    )
+    command(
+        "depmod",
+        "-a",
+        kernel_name,
+        nspawn=cfg.path.initrd,
+    )
+
+if 'debug' not in cfg.modules:
+    # strip kernel modules
+    count = 0
+    for path, _, files in os.walk(cfg.path.initrd + '/lib/modules'):
+        for filename in files:
+            if filename.endswith('.ko'):
+                full_path = os.path.join(path, filename)
+                command('strip', '--strip-debug', full_path, silent=count)
+                count += 1
+    if count > 1:
+        print(f'$ ... (stripped {count - 1} more modules)')

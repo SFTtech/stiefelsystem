@@ -1,0 +1,9 @@
+[Unit]
+Description=Auto-reboot into Stiefelsystem server on Adapter detection
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stiefel-autokexec
+
+[Install]
+WantedBy=multi-user.target

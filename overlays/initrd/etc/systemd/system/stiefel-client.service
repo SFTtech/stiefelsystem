@@ -1,0 +1,8 @@
+[Unit]
+Description=stiefelsystem client
+Requires=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/stiefel-client
+StandardOutput=journal+console

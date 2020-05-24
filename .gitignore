@@ -1,0 +1,10 @@
+/cache
+/workdir
+/aes-key
+/config.yaml
+__pycache__
+.*.swp
+~*
+*.pyc
+*.pyo
+*.pdf

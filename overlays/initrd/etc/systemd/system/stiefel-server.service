@@ -1,0 +1,8 @@
+[Unit]
+Description=stiefelsystem server
+Requires=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stiefel-server
+StandardOutput=journal+console

@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+import argparse
+
+from config import CONFIG as cfg
+from util import (
+    command,
+    ensure_root,
+)
+
+ensure_root()
+
+cli = argparse.ArgumentParser()
+cli.add_argument('--target', default=cfg.path.initrd)
+args = cli.parse_args()
+
+command('-b', nspawn=args.target)

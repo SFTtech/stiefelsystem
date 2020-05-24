@@ -1,0 +1,118 @@
+#!/usr/bin/python3 -u
+import base64
+import io
+import json
+import os
+import struct
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.request
+
+import Cryptodome.Cipher.AES
+
+print(f"reading config from kernel cmdline")
+
+with open('/proc/cmdline') as cmdlinefile:
+    cmdline = cmdlinefile.read()
+cmdlineargs = {}
+for entry in cmdline.strip().split():
+    try:
+        key, value = entry.split('=', maxsplit=1)
+        cmdlineargs[key] = value
+    except ValueError:
+        continue
+
+IPCFG = cmdlineargs["stiefel_cliip"]
+SRVIP = cmdlineargs["stiefel_srvip"]
+INNER_CMDLINE = base64.b64decode(cmdlineargs["stiefel_innercmdline"]).decode()
+
+print(f"config: {cmdlineargs}")
+
+# TODO: poll on all net devices at once, using different network namespaces
+# (in subprocesses)
+while True:
+    # iterate over all available network devices and see if we can reach the server there
+    for netdev in os.listdir('/sys/class/net'):
+        if netdev == 'lo':
+            continue
+
+        print(f"looking for stiefelsystem server on {netdev}")
+
+        try:
+            subprocess.check_call(['ip', 'a', 'flush', 'dev', netdev])
+            subprocess.check_call(['ip', 'l', 'set', 'up', netdev])
+            time.sleep(3)
+            subprocess.check_call(['ip', 'a', 'a', IPCFG, 'dev', netdev])
+            subprocess.check_call(['ip', 'r', 'a', 'default', 'dev', netdev])
+            time.sleep(0.1)
+            # test if we can talk to the server on HTTP
+            print(f'fetching http://{SRVIP}/')
+            request = urllib.request.urlopen(f'http://{SRVIP}/', timeout=0.2)
+            meta = json.loads(request.read().decode('utf-8'))
+            if meta['what'] != 'stiefelsystem-server':
+                raise ValueError("not a stiefelsystem!")
+        except Exception as exc:
+            # couldn't read shared secret on this link
+            print(exc)
+        else:
+            # we got the shared secret
+            with open(f'/sys/class/net/{netdev}/address') as macfile:
+                MAC = macfile.read().strip()
+            break
+
+        subprocess.call(['ip', 'l', 'set', 'down', netdev])
+        subprocess.call(['ip', 'a', 'flush', 'dev', netdev])
+    else:
+        continue
+    break
+
+challenge = base64.b64encode(os.urandom(16)).decode()
+print(f'fetching http://{SRVIP}/boot.tar.aes?challenge={challenge}')
+blob = urllib.request.urlopen(f'http://{SRVIP}/boot.tar.aes?challenge={challenge}').read()
+if len(blob) < 32:
+    raise ValueError("corrupted boot.tar.aes")
+nonce = blob[:16]
+ciphertext = blob[16:-16]
+mac = blob[-16:]
+
+with open('/aeskey', 'rb') as keyfile:
+    AESKEY = keyfile.read()
+
+cipher = Cryptodome.Cipher.AES.new(AESKEY, Cryptodome.Cipher.AES.MODE_EAX, nonce=nonce, mac_len=16)
+print('decrypting boot.tar.aes')
+tar_blob = cipher.decrypt_and_verify(ciphertext, mac)
+del nonce, ciphertext, mac
+print('decryption done')
+
+with io.BytesIO(tar_blob) as tarfileobj:
+    with tarfile.open(fileobj=tarfileobj, mode='r') as tar:
+        # validate challenge response
+        with tar.extractfile(tar.getmember('challenge')) as fileobj:
+            challenge_response = fileobj.read().decode()
+            expected_response = f'/boot.tar.aes?challenge={challenge}'
+            if challenge_response != expected_response:
+                print(f"challenge response: {challenge_response}")
+                print(f"expected response: {expected_response}")
+                raise ValueError('bad challenge response - replay attack?')
+        # extract this tar file
+        for member in tar.getmembers():
+            with tar.extractfile(member) as fileobj:
+                data = fileobj.read()
+            print(f'    {member.name}: {len(data)} bytes')
+            if member.name != 'challenge':
+                with open(f'/{member.name}', 'wb') as fileobj:
+                    fileobj.write(data)
+
+print(f"booting into new kernel")
+
+CMDLINE = (
+    INNER_CMDLINE +
+    " stiefel_srvip=" + SRVIP +
+    " stiefel_nbdname=stiefelblock" + # name is hardcoded in stiefel-server
+    " stiefel_link=" + MAC +
+    " stiefel_cliip=" + IPCFG
+)
+
+subprocess.check_call(['kexec', '/kernel', '--ramdisk=/initrd', '--command-line=' + CMDLINE])

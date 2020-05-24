@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""
+script to test the server and client in qemu.
+
+run this in two terminals.
+first you need to start the server:
+
+sudo ./qemu server
+
+then, run
+
+sudo ./qemu client
+
+they should be able to talk to each other.
+the client should download the kernel and initrd from the server,
+and proceed up to `kexec`.
+"""
+import argparse
+import base64
+import contextlib
+import os
+import tempfile
+
+from config import CONFIG as cfg
+from util import (
+    command,
+    ensure_root,
+)
+
+ensure_root()
+
+cli = argparse.ArgumentParser()
+cli.add_argument('--kernel', default=cfg.path.initrd + '/vmlinuz')
+cli.add_argument('--initrd', default=cfg.path.cpio)
+cli.add_argument('mode')
+args = cli.parse_args()
+
+with contextlib.ExitStack() as exit_stack:
+    tmpdir = exit_stack.enter_context(tempfile.TemporaryDirectory())
+    def tmppath(name):
+        return os.path.join(tmpdir, name)
+
+    if args.mode == 'client':
+        mac = "52:54:00:5f:70:02"
+
+        extra_qemu_args = []
+
+        inner_cmdline = base64.b64encode(" ".join([
+            "lol",
+            "wtf"
+        ]).encode('utf-8')).decode('ascii')
+
+        cmdline = " ".join([
+            "systemd.unit=stiefel-client.service",
+            "nomodeset",
+            "stiefel_cliip=10.4.5.2/24",
+            "stiefel_srvip=10.4.5.3",
+            "stiefel_innercmdline=" + inner_cmdline,
+        ])
+    elif args.mode == 'server':
+        mac = "52:54:00:5f:70:03"
+
+        # create the disk image that will be served to the server
+        with open(tmppath('loop_file'), 'wb') as loop_file:
+            loop_file.truncate(2**32)  # 4 GiB sparse
+        # create partitions in loop file
+        command(
+            'sfdisk', loop_file.name,
+            stdin='label: dos\n2048,1638400,c,*\n'
+        )
+        # create the loop device
+        loop_device_name = command(
+            'losetup', '-fP', '--show', tmppath('loop_file'),
+            capture_stdout=True
+        )
+        loop_device_name = loop_device_name.decode().strip()
+        exit_stack.callback(lambda: command('losetup', '-d', loop_device_name))
+        partition_name = loop_device_name + 'p1'
+        # create filesystem on the partition
+        command('mkfs.vfat', '-F', '16', partition_name)
+        # mount filesystem, fill it with files, and unmount it
+        os.makedirs(tmppath('mountpoint'), exist_ok=True)
+        command('mount', partition_name, tmppath('mountpoint'))
+        try:
+            command('cp', args.kernel, tmppath('mountpoint') + '/kernel')
+            command('cp', args.initrd, tmppath('mountpoint') + '/initrd')
+        finally:
+            command('umount', tmppath('mountpoint'))
+
+        # setup the bridge that allows connection to the client VM
+        command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
+        command('ip', 'link', 'set', 'dev', 'br0', 'up')
+        command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
+        exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
+
+        extra_qemu_args = [
+            "-drive", f"file={loop_device_name},format=raw,if=virtio"
+        ]
+
+        cmdline = " ".join([
+            "systemd.unit=stiefel-server.service",
+            "stiefel_srvip=10.4.5.3/24",
+            f"stiefel_srvmacs={mac}",
+            "stiefel_bootdisk=/dev/vda",
+            "stiefel_bootpart=/dev/vda1",
+            "stiefel_kernel=kernel stiefel_initrd=initrd",
+        ])
+
+    else:
+        cli.error("mode must be 'client' or 'server'")
+
+    with open(tmppath('ifup-script'), 'w') as ifup_script:
+        ifup_script.writelines([
+            "#!/bin/sh\n",
+            "ip l set $1 up\n",
+            "ip l set dev $1 master br0\n",
+            "ip l set br0 up\n",
+        ])
+    os.chmod(tmppath('ifup-script'), 0o755)
+
+    print("quit qemu with C-A X")
+    print("press ENTER to enter simulation")
+    input()
+
+    command(
+        "qemu-system-x86_64",
+        "-machine", "q35,accel=kvm",
+        "-m", "10240",
+        "-kernel", args.kernel,
+        "-initrd", args.initrd,
+        "-nographic",
+        "-netdev", f"tap,id=network0,script={tmppath('ifup-script')},downscript=no",
+        "-device", f"virtio-net,netdev=network0,mac={mac}",
+        "-append", "console=ttyS0 " + cmdline,
+        *extra_qemu_args
+    )

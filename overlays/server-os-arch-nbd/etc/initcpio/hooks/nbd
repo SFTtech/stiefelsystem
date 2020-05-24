@@ -1,0 +1,37 @@
+run_hook() {
+	echo 'waiting for ethernet device'
+
+	i=0
+	while [ $i -lt 1000 ]; do
+		# attempt to rename. the command gives no feedback :(
+		echo "stiefellink mac ${stiefel_link}" | ifrename -c -
+		
+		if [ -e /sys/class/net/stiefellink ]; then
+			break
+		fi
+		sleep 0.05
+		i=$(($i+1))
+	done
+
+	ip link set up stiefellink
+	ip a a ${stiefel_cliip} dev stiefellink
+
+	echo "waiting for server to appear"
+	
+	i=0
+	while [ $i -lt 30 ]; do
+		if ping -w1 -c1 ${stiefel_srvip}; then
+			break
+		fi
+		sleep 0.1
+		i=$(($i+1))
+	done
+
+	msg "modprobe nbd"
+	modprobe nbd
+	msg "nbd-client ${stiefel_srvip} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}"
+	nbd-client ${stiefel_srvip} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}
+
+	msg "nbd mount done"
+	blkid
+}

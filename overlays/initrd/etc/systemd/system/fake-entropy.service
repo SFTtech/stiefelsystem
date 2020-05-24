@@ -1,0 +1,10 @@
+[Unit]
+Description=Add fake entropy to the pool to unblock shit
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fake-entropy
+StandardOutput=journal+console
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,196 @@
+# list of modules that shall be used during image creation.
+# see module-configs below to configure the modules (if applicable)
+modules:
+    # necessary base components. just try disabling this and see what happens.
+    - base
+    # support for arch linux payload systems
+    # takes care of mkinitcpio integration
+    - system-arch
+    # support for r8152-family realtek USB ethernet controllers
+    - r8152
+    # support for clevo notebook fan control
+    - clevo-fancontrol
+    # stiefel through the nbd protocol
+    - nbd
+    # debug mode: the initrds will be much larger and much more usable
+    #- debug
+
+boot:
+    # the disk that is shared by the server
+    disk: /dev/disk/by-id/ata-Samsung_SSD_860_EVO_1TB_S3Z9NB0K119516H
+    # the boot where the server gets the kernel and initrd
+    part: /dev/disk/by-partlabel/boot
+    # the cmdline that will be given to the stiefeled system
+    cmdline:
+        - root=PARTUUID=fdb19589-ad52-4228-996a-50fb34854d2c
+        - rw
+        - consoleblank=0
+
+network:
+    # mac addresses for the adapter in the server system
+    # stiefel-autokexec will reboot into the stiefelsystem server
+    # when an adapter with this mac is detected.
+    # in the stiefelsystem server, these adapters are configured
+    # for providing stiefel services.
+    # use lower-case.
+    macs:
+        - a0:ce:c8:cc:57:47
+        - a0:ce:c8:cc:57:c9
+        - 00:e0:4c:68:00:96
+    # server
+    server-ip: 10.4.4.3/24
+    # client
+    client-ip: 10.4.4.2/24
+
+server-setup:
+    # how to setup the system that boots the stiefelsystem server
+    # the config json is always placed in /etc/stiefelsystem.json
+
+    # the kernel of the stiefelsystem
+    # both this kernel and the initrd are multi-purpose;
+    # the same images are used when creating the client flash drive
+    # and when kexec-ing into the server system.
+    stiefelsystem-kernel: /var/local/lib/stiefelsystem/kernel
+    # the initrd of the stiefelsystem
+    stiefelsystem-initrd: /var/local/lib/stiefelsystem/initrd
+
+# instructions for generating the initrd
+initrd:
+    # list of debian packages that shall be included
+    include-packages:
+        - iputils-ping
+
+    shell: /usr/bin/dash
+    password: stiefel
+
+    # instructions for packing
+    packing:
+        # compression utility that is called for the initrd CPIO
+        # use 'cat' for uncompressed CPIO
+        compressor: pigz -11
+        # these paths will not be included in the initrd CPIO archive
+        # when packing it, to save space
+        exclude-paths:
+            - boot
+            - usr/share/man
+            - var/cache
+            - var/lib/apt
+            - var/lib/dpkg
+            - var/log
+            - usr/share/locale
+            - usr/share/info
+            - usr/share/doc
+            - usr/share/zoneinfo
+            - usr/share/bash-completion
+            - usr/share/zsh
+            - usr/share/initramfs-tools
+            - usr/share/keyrings
+            - usr/share/common-licenses
+            - usr/lib/apt
+            - usr/lib/dpkg
+            - etc/apt
+            - etc/dpkg
+            - etc/motd
+            - root
+        # files that are included in these apt packages will not be included
+        # the initrd CPIO archive when packing it, to save space
+        exclude-packages:
+            # we don't need no stinking package manager
+            # dpkg is unfortunately required for /sbin/start-stop-daemon
+            - apt
+            - debconf
+            - libapt-pkg5.0:amd64
+            - libdebconfclient0:amd64
+            # yay! our system is perl-free!
+            - perl-base
+            # utils
+            - e2fsprogs
+            - fdisk
+            - passwd
+            - adduser
+            - findutils
+            - hostname
+            - sensible-utils  # don't seem very sensible to me!!!!!!!!111111
+            - libext2fs2:amd64
+            - libfdisk1:amd64
+            # initramfs-generation stuff
+            - initramfs-tools
+            - initramfs-tools-core
+            - cpio
+            - libklibc:amd64
+            - klibc-utils
+            # not so sure about these...
+            - ncurses-bin
+            - libdb5.3:amd64
+            - libsemanage-common
+            - libsemanage1:amd64
+            - libsepol1:amd64
+            - libss2:amd64
+            # who needs usability
+            - bash
+            - readline-common
+            - libreadline7:amd64
+            # haha who needs basic unix tools
+            - grep
+            - mawk
+            - tar
+            # this was just for running the nspawn commands during setup
+            - systemd-container
+
+# the directory structure where the temporary and other files
+# will be placed while running these scripts.
+paths:
+    # cache folder; the ramdisk here persists over multiple iterations,
+    # and e.g. caches debootstrap downloads.
+    cache: cache
+
+    # work directory; the ramdisk here is re-created when a new initcpio
+    # is created.
+    workdir: workdir
+
+    # subdirectories of the workdir
+    workdir-subpaths:
+        # the target initrd CPIO archive
+        cpio: initrd.cpio
+        # the target initrd
+        initrd: initrd.nspawn
+        # the development overlayfs mount of the initrd, where compilers
+        # are installed and run.
+        initrd-devel: initrd.nspawn-devel
+
+# module-specific options
+module-configs:
+    debug:
+        better-shell: /usr/bin/bash
+        dont-exclude-packages: true
+        dont-exclude-paths: true
+        faster-compressor: pigz -1
+        extra-packages:
+            - bash-completion
+            - curl
+            - ethtool
+            - gzip
+            - htop
+            - iperf
+            - less
+            - man-db
+            - mlocate
+            - neovim
+            - nmap
+            - pciutils
+            - pigz
+            - procps
+            - psmisc
+            - pv
+            - silversearcher-ag
+            - tcpdump
+            - time
+            - tmux
+            - usbutils
+            - util-linux
+            - xxd
+            - xz-utils
+    r8152:
+        url: https://github.com/wget/realtek-r8152-linux/archive/v2.13.tar.gz
+    clevo-fancontrol:
+        url: https://github.com/mic-e/clevo-fancontrol/archive/1.0.tar.gz
