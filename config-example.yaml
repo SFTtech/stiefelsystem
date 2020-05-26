@@ -168,6 +168,7 @@ module-configs:
             - less
             - man-db
             - mlocate
+            - nbd-client
             - neovim
             - nmap
             - pciutils

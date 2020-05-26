@@ -36,7 +36,7 @@ deb_packages = [
     'systemd-sysv',  # to provide symlinks in /sbin: init, poweroff, ...
 ]
 if 'nbd' in cfg.modules:
-    deb_packages.extend(['nbd-client', 'nbd-server'])
+    deb_packages.extend(['nbd-server'])
 deb_packages.extend(cfg.initrd.include_packages)
 
 # perform initial setup
