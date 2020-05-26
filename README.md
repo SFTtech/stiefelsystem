@@ -83,6 +83,11 @@ I'd really like to use Y, but you haven't implemented support yet.
 
 # TODO
 
+## Creation scripts
+
+- Unify create-initrd-nspawn and create-initrd-cpio
+- Allow skipping some of the more time-consuming parts of create-initrd-nspawn
+
 ## Network setup
 
 - Allow enabling jumbo frames (8192 bytes?) for higher throughput with bigger files
