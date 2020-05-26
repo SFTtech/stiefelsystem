@@ -16,14 +16,15 @@ from util import (
 )
 
 ensure_root()
+
+command('lsblk')
+
 cli = argparse.ArgumentParser()
 cli.add_argument('blockdev')
 args = cli.parse_args()
 
-command('lsblk')
-
 if not os.path.exists(args.blockdev):
-    args.error(f'block device does not exist: {args.blockdev!r}')
+    cli.error(f'block device does not exist: {args.blockdev!r}')
 
 partition = f'{args.blockdev}1'
 
