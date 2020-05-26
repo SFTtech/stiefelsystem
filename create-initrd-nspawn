@@ -211,6 +211,9 @@ if 'r8152' in cfg.modules:
         nspawn=cfg.path.initrd,
     )
 
+if 'debug' in cfg.modules:
+    command('updatedb', nspawn=cfg.path.initrd)
+
 if 'debug' not in cfg.modules:
     # strip kernel modules
     count = 0
