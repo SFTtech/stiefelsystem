@@ -53,8 +53,6 @@ with contextlib.ExitStack() as exit_stack:
         cmdline = " ".join([
             "systemd.unit=stiefel-client.service",
             "nomodeset",
-            "stiefel_cliip=10.4.5.2/24",
-            "stiefel_srvip=10.4.5.3",
             "stiefel_innercmdline=" + inner_cmdline,
         ])
     elif args.mode == 'server':
@@ -99,8 +97,6 @@ with contextlib.ExitStack() as exit_stack:
 
         cmdline = " ".join([
             "systemd.unit=stiefel-server.service",
-            "stiefel_srvip=10.4.5.3/24",
-            f"stiefel_srvmacs={mac}",
             "stiefel_bootdisk=/dev/vda",
             "stiefel_bootpart=/dev/vda1",
             "stiefel_kernel=kernel stiefel_initrd=initrd",

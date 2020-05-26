@@ -58,7 +58,7 @@ if not os.path.exists('aes-key'):
     print('generating new AES key')
     with open('aes-key', 'wb') as fileobj:
         fileobj.write(os.urandom(16))
-command('cp', 'aes-key', os.path.join(cfg.path.initrd, 'aeskey'))
+command('cp', 'aes-key', cfg.path.initrd)
 
 # set root password
 command(

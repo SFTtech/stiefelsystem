@@ -15,8 +15,7 @@ if os.path.exists('/sys/class/net/stiefellink'):
 with open('/etc/stiefelsystem-config.json') as cfg_fileobj:
     config = json.load(cfg_fileobj)
 
-macs = config['srv-macs']
-mac_set = set(macs)
+adapters = config['autokexec-triggers']['adapters']
 
 context = pyudev.Context()
 udev_monitor = pyudev.Monitor.from_netlink(context)
@@ -26,34 +25,38 @@ def command(*cmd):
     print(f'$ {" ".join(shlex.quote(part) for part in cmd)}')
     subprocess.call(cmd)
 
-print('waiting for one of the stiefelsystem network interfaces:')
-for mac in macs:
+print('waiting for one of these adapters:')
+for mac in adapters:
     print(f'  {mac}')
 
+do_autokexec = False
 while True:
+    # test if we have the adapter now
     for netif in os.listdir('/sys/class/net'):
         with open(f'/sys/class/net/{netif}/address') as addrfile:
             mac = addrfile.read().strip()
-            if mac in mac_set:
-                cmdline = [
-                    f'systemd.unit=stiefel-server.service',
-                    f'stiefel_srvip={config["srv-ip"]}',
-                    f'stiefel_srvmacs={",".join(macs)}',
-                    f'stiefel_bootdisk={config["bootdisk"]}',
-                    f'stiefel_bootpart={config["bootpart"]}',
-                    f'stiefel_kernel={config["kernel"]}',
-                    f'stiefel_initrd={config["initrd"]}',
-                ]
+            if mac in adapters:
+                print(f"adapter found: {mac}")
+                do_autokexec = True
+                break
 
-                print(f'adapter found: {mac}')
-                print(f'activating stiefelsystem to boot server!')
+    if do_autokexec:
+        print(f'activating stiefelsystem to boot server!')
 
-                command(
-                    'kexec',
-                    config['stiefelsystem-kernel'],
-                    '--ramdisk=' + config['stiefelsystem-initrd'],
-                    '--command-line=' + ' '.join(cmdline)
-                )
+        cmdline = [
+            f'systemd.unit=stiefel-server.service',
+            f'stiefel_bootdisk={config["bootdisk"]}',
+            f'stiefel_bootpart={config["bootpart"]}',
+            f'stiefel_kernel={config["kernel"]}',
+            f'stiefel_initrd={config["initrd"]}',
+        ]
 
-    # wait until something happens with network devices
+        command(
+            'kexec',
+            config['stiefelsystem-kernel'],
+            '--ramdisk=' + config['stiefelsystem-initrd'],
+            '--command-line=' + ' '.join(cmdline)
+        )
+
+    # wait until something happens
     udev_monitor.poll()

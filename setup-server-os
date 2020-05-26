@@ -57,8 +57,9 @@ if 'base' in cfg.modules:
     ensure_unit_enabled('stiefel-autokexec.service')
 
     stiefel_config = {
-        "srv-macs": cfg.net.macs,
-        "srv-ip": cfg.net.server_ip,
+        "autokexec-triggers": {
+            "adapters": cfg.autokexec.macs,
+        },
         "bootdisk": cfg.boot.disk,
         "bootpart": cfg.boot.part,
         "kernel": get_kernel_path(),

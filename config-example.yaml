@@ -26,21 +26,14 @@ boot:
         - rw
         - consoleblank=0
 
-network:
-    # mac addresses for the adapter in the server system
-    # stiefel-autokexec will reboot into the stiefelsystem server
-    # when an adapter with this mac is detected.
-    # in the stiefelsystem server, these adapters are configured
-    # for providing stiefel services.
-    # use lower-case.
+# settings for automatic reboot of the laptop into stiefel-server
+autokexec:
+    # when an adapter with one of these mac addresses is connected,
+    # the reboot occurs
     macs:
         - a0:ce:c8:cc:57:47
         - a0:ce:c8:cc:57:c9
         - 00:e0:4c:68:00:96
-    # server
-    server-ip: 10.4.4.3/24
-    # client
-    client-ip: 10.4.4.2/24
 
 server-setup:
     # how to setup the system that boots the stiefelsystem server

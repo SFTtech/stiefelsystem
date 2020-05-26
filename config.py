@@ -60,7 +60,7 @@ class Config:
             self.modules[module] = self.mod_config.get(module)
 
         self.boot = BootConfig(raw['boot'])
-        self.net = NetworkConfig(raw['network'])
+        self.autokexec = AutoKexecConfig(raw['autokexec'])
         self.server_setup = ServerSetupConfig(raw['server-setup'])
         self.initrd = InitRDConfig(raw['initrd'])
         self.packing = PackingConfig(raw['initrd']['packing'])
@@ -81,14 +81,12 @@ class BootConfig:
         self.cmdline = ensure_stringlist(raw['cmdline'])
 
 
-class NetworkConfig:
+class AutoKexecConfig:
     """
-    Server and client system connectivity settings
+    Configuration for stiefel-autokexec service that runs on the laptop
     """
     def __init__(self, raw):
         self.macs = ensure_stringlist(raw['macs'])
-        self.server_ip = ensure_string(raw['server-ip'])
-        self.client_ip = ensure_string(raw['client-ip'])
 
 
 class ServerSetupConfig:

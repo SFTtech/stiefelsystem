@@ -14,13 +14,12 @@ run_hook() {
 	done
 
 	ip link set up stiefellink
-	ip a a ${stiefel_cliip} dev stiefellink
 
-	echo "waiting for server to appear"
+	echo "waiting for server to be reachable"
 	
 	i=0
-	while [ $i -lt 30 ]; do
-		if ping -w1 -c1 ${stiefel_srvip}; then
+	while [ $i -lt 500 ]; do
+		if ping -w1 -c1 ${stiefel_nbdhost}; then
 			break
 		fi
 		sleep 0.1
@@ -29,9 +28,8 @@ run_hook() {
 
 	msg "modprobe nbd"
 	modprobe nbd
-	msg "nbd-client ${stiefel_srvip} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}"
-	nbd-client ${stiefel_srvip} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}
-
+	msg "nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}"
+	nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}
 	msg "nbd mount done"
 	blkid
 }

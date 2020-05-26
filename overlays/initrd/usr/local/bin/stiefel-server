@@ -4,7 +4,9 @@ import hashlib
 import http.server
 import io
 import json
+import multiprocessing
 import os
+import socket
 import subprocess
 import struct
 import tarfile
@@ -31,56 +33,73 @@ for entry in cmdline.strip().split():
 
 print(f"config: {cmdlineargs}")
 
+with open("/aes-key", "rb") as keyfile:
+    KEY = keyfile.read()
+KEY_HASH = hashlib.sha256(KEY).hexdigest().encode()
+
+
+def discovery_server():
+    """
+    listens for and responds to discovery multicast messages,
+    thus providing its IP to interested clients.
+
+    designed to be run in a multiprocessing subprocess.
+    """
+    discovery_port = 61570  # determined by random.choice(range(49152, 2**16))
+    nameinfo_flags = socket.NI_NUMERICHOST
+
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('', discovery_port))
+    # allow multicast loopback for development
+    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_LOOP, True)
+
+    print("discovery server: listening for packets")
+    while True:
+        data, addr = sock.recvfrom(1024)
+        if data != b'stiefelsystem:discovery:find-server:' + KEY_HASH:
+            continue
+        host, _ = socket.getnameinfo(addr, nameinfo_flags)
+        print(f"{host!r} is looking for us")
+        try:
+            sock.sendto(b'stiefelsystem:discovery:server-hello:' + KEY_HASH, addr)
+        except BaseException as exc:
+            print(f"cannot send discovery reply: {exc!r}")
+
+
+def continuous_network_setup():
+    """
+    continuously enables all network interfaces as they become available.
+
+    designed to be run in a multiprocessing subprocess.
+    """
+    print('running continuous network setup')
+    while True:
+        for netdev in os.listdir('/sys/class/net'):
+            with open(f'/sys/class/net/{netdev}/operstate') as state_file:
+                if state_file.read().strip() != 'down':
+                    continue
+            print(f"setting link up: {netdev!r}")
+            try:
+                subprocess.check_call(['ip', 'link', 'set', 'up', netdev])
+            except BaseException as exc:
+                print(f"could not set link up: {exc!r}")
+
+        # instead of time.sleep(), we could use udev like in stiefel-autokexec
+        time.sleep(0.5 * 20)
+
+
 # challenge for clients to prevent replay attacks
 CHALLENGE = base64.b64encode(os.urandom(16)).decode('ascii')
 
-IPCFG = cmdlineargs['stiefel_srvip']
 BLKDEV = cmdlineargs["stiefel_bootdisk"]
 BOOTPART = cmdlineargs["stiefel_bootpart"]
 KERNEL = cmdlineargs["stiefel_kernel"]
 INITRD = cmdlineargs["stiefel_initrd"]
-NOCRYPTO = bool(int(cmdlineargs.get("stiefel_nocrypto", "0")))
-MACS = set()
-for mac in cmdlineargs["stiefel_srvmacs"].split(','):
-    mac = mac.strip()
-    if mac:
-        MACS.add(mac)
+UNSECURE = bool(int(cmdlineargs.get("stiefel_unsecure", "0")))
 
-def attempt_netcfg():
-    for netdev in os.listdir('/sys/class/net'):
-        with open(f'/sys/class/net/{netdev}/address') as macfile:
-            mac = macfile.read().strip()
-        if mac in MACS:
-            print(f"network interface found: {mac} {netdev}")
-            print(f"attempting to configure it with {IPCFG}")
-            # interface found
-            try:
-                print(f"configuring network: {IPCFG} on {mac} {netdev}")
-                time.sleep(1)
-                subprocess.check_call(['ip', 'l', 'set', 'up', netdev])
-                time.sleep(0.1)
-                subprocess.check_call(['ip', 'a', 'a', IPCFG, 'dev', netdev])
-                subprocess.check_call(['ip', 'r', 'a', 'default', 'dev', netdev])
-                return True
-            except BaseException:
-                print("could not configure network")
-    return False
-
-# wait for network interface to be available
-for i in range(10000):
-    if i % 250 == 0:
-        print(f"waiting for network interface: ({', '.join(MACS)})")
-
-    if attempt_netcfg():
-        break
-    else:
-        time.sleep(0.02)
-else:
-    # no interface found
-    raise ValueError("could not find network device")
-
-# TODO: notice when the interface goes down, then restart this script
-# TODO: allow other methods than NBD
+multiprocessing.Process(target=continuous_network_setup).start()
+multiprocessing.Process(target=discovery_server).start()
 
 # create NBD config
 with open("/etc/nbd-server/config", "w") as nbdconfigfile:
@@ -122,30 +141,28 @@ def get_boot_tar(challenge):
         return fileobj.read()
 
 # run HTTP server
-print("running HTTP server")
 def handle_request(path):
     if path == '/':
         return 200, json.dumps({
             "what": "stiefelsystem-server",
             "args": cmdlineargs,
+            "key-hash": KEY_HASH.decode(),
             "challenge": CHALLENGE,
-        }, indent=4)
+        }) + '\n'
     elif path == '/boot.tar':
-        if NOCRYPTO:
+        if UNSECURE:
             return 200, get_boot_tar(b'')
         else:
-            return 503, "only boot.tar.aes is available"
+            return 403, "only boot.tar.aes is available"
     elif path.startswith('/boot.tar.aes?challenge='):
         # the client shall supply a random challenge to prevent replay
         # attacks that would cause the boot of an older kernel/initrd.
         plaintext = get_boot_tar(challenge=path.encode('utf-8'))
-        with open('/aeskey', 'rb') as keyfile:
-            key = keyfile.read()
         nonce_gen = hashlib.sha256(plaintext)  # recommended by djb lol
         nonce_gen.update(os.urandom(16))
         nonce = nonce_gen.digest()[:16]
         cipher = Cryptodome.Cipher.AES.new(
-            key,
+            KEY,
             Cryptodome.Cipher.AES.MODE_EAX,
             nonce=nonce,
             mac_len=16
@@ -184,9 +201,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
         self.wfile.write(message)
 
-with open('/etc/hostname') as hostnamefile:
-    hostname = hostnamefile.read().strip()
-with open('/etc/hosts', 'a') as hostsfile:
-    hostsfile.write(f'{IPCFG.split("/")[0]} {hostname}\n')
+class HTTPServerIPv6(http.server.HTTPServer):
+    address_family = socket.AF_INET6
 
-http.server.HTTPServer(('', 80), RequestHandler).serve_forever()
+print("running HTTP server")
+
+HTTPServerIPv6(('::', 80), RequestHandler).serve_forever()

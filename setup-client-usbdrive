@@ -70,9 +70,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
             # them harder.
             "nomodeset",
             "systemd.unit=stiefel-client.service",
-            f"stiefel_cliip={cfg.net.client_ip}",
-            f"stiefel_srvip={cfg.net.server_ip.split('/')[0]}",
-            f"stiefel_innercmdline={base64.b64encode(inner_cmdline).decode()}",
+            "stiefel_innercmdline=" + base64.b64encode(inner_cmdline).decode(),
         ])
 
         with open(os.path.join(tmpdir, 'syslinux.cfg'), 'w') as syslinuxcfg:
