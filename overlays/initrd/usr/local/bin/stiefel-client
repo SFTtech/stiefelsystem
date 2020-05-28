@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -u
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -33,6 +34,7 @@ print(f"config: {cmdlineargs}")
 with open('/aes-key', 'rb') as keyfile:
     KEY = keyfile.read()
 KEY_HASH = hashlib.sha256(KEY).hexdigest().encode()
+AUTOKEXEC_HMAC_KEY = hashlib.sha256(b'autokexec-reboot/' + KEY).hexdigest().encode()
 
 # server discovery loop
 DISCOVERY_PORT = 61570
@@ -74,30 +76,39 @@ while SERVER is None:
             data, addr = sock.recvfrom(1024)
         except socket.timeout:
             break
-        if data != b"stiefelsystem:discovery:server-hello:" + KEY_HASH:
-            continue
-
         host, _ = socket.getnameinfo(addr, NAMEINFO_FLAGS)
 
-        SERVER_INTERFACE = host.split('%')[1]
-        with open(f'/sys/class/net/{SERVER_INTERFACE}/address') as mac_file:
-            SERVER_INTERFACE_MAC = mac_file.read().strip()
-
         try:
-            # test if we can talk to the server on HTTP
-            SERVER_HTTP_URL = f"http://[{host.replace('%', '%25')}]"
-            print(f'fetching {SERVER_HTTP_URL}')
-            request = urllib.request.urlopen(SERVER_HTTP_URL, timeout=1)
-            meta = json.loads(request.read().decode('utf-8'))
-            if meta['what'] != 'stiefelsystem-server':
-                raise ValueError("not a stiefelsystem server!")
-            SERVER_CHALLENGE = meta['challenge']
-            if meta['key-hash'] != KEY_HASH.decode():
-                raise ValueError("wrong key hash")
-            SERVER = host
-            break
+            if data == b"stiefelsystem:discovery:server-hello:" + KEY_HASH:
+                # test if we can talk to the server on HTTP
+                SERVER_HTTP_URL = f"http://[{host.replace('%', '%25')}]"
+                print(f'fetching {SERVER_HTTP_URL}')
+                request = urllib.request.urlopen(SERVER_HTTP_URL, timeout=1)
+                meta = json.loads(request.read().decode('utf-8'))
+                if meta['what'] != 'stiefelsystem-server':
+                    raise ValueError("not a stiefelsystem server!")
+                SERVER_CHALLENGE = meta['challenge']
+                if meta['key-hash'] != KEY_HASH.decode():
+                    raise ValueError("wrong key hash")
+                SERVER = host
+                SERVER_INTERFACE = host.split('%')[1]
+                with open(f'/sys/class/net/{SERVER_INTERFACE}/address') as mac_file:
+                    SERVER_INTERFACE_MAC = mac_file.read().strip()
+                break
+            elif data.startswith(b'stiefelsystem:discovery:autokexec-hello:' + KEY_HASH):
+                # solve the challenge
+                print(f'activating autkexec on {host!r}')
+                challenge = data.split(b':')[-1]
+                response = hmac.new(AUTOKEXEC_HMAC_KEY, challenge, digestmod='sha256').hexdigest()
+                sock.sendto(
+                    b'stiefelsystem:discovery:autokexec-reboot:' + KEY_HASH +
+                    b':' + response.encode(),
+                    addr
+                )
+
         except BaseException as exc:
-            print(f"server is broken: {exc!r}")
+            print(f"server {host!r} is broken: {exc!r}")
+
 
 challenge = base64.b64encode(os.urandom(16)).decode()
 print(f'fetching {SERVER_HTTP_URL}/boot.tar.aes?challenge={challenge}')
