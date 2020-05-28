@@ -1,5 +1,3 @@
-SFT Stiefelsystem
-
 # What?
 
 Allows you to boot your (or anyone's really) desktop PC with the exact same
