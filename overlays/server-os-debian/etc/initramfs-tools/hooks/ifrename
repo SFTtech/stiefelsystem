@@ -1,0 +1,18 @@
+#!/bin/sh
+PREREQ=""
+prereqs()
+{
+     echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+     prereqs
+     exit 0
+     ;;
+esac
+
+# ifrename
+. /usr/share/initramfs-tools/hook-functions #provides copy_exec
+rm -f ${DESTDIR}/sbin/ifrename                        #copy_exec won't overwrite an existing file
+copy_exec /sbin/ifrename /bin/ifrename #Takes location in filesystem and location in initramfs as arguments

@@ -1,0 +1,69 @@
+#!/bin/sh
+PREREQ="udev"
+prereqs()
+{
+	echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+case "$(cat /proc/cmdline)" in
+  *stiefel_link*)
+	echo "wir werden gestiefelt"
+
+	for x in $(cat /proc/cmdline); do
+		case "$x" in
+			stiefel_link=*)
+				stiefel_link="${x#stiefel_link=}"
+				;;
+			stiefel_nbdhost=*)
+				stiefel_link="${x#stiefel_nbdhost=}"
+				;;
+			stiefel_nbdname=*)
+				stiefel_link="${x#stiefel_nbdname=}"
+				;;
+		esac
+	done
+
+
+
+	echo 'waiting for ethernet device'
+
+	i=0
+	while [ $i -lt 1000 ]; do
+	    # attempt to rename. the command gives no feedback :(
+	    echo "stiefellink mac ${stiefel_link}" | ifrename -c -
+	    
+	    if [ -e /sys/class/net/stiefellink ]; then
+		break
+	    fi
+	    sleep 0.05
+	    i=$(($i+1))
+	done
+
+	ip link set up stiefellink
+
+	echo "waiting for server to be reachable"
+	sleep 5
+
+        while [ $i -lt 500 ]; do
+                if ping -w1 -c1 ${stiefel_nbdhost}; then
+                        break
+                fi  
+                sleep 0.1 
+                i=$(($i+1))
+        done
+
+	echo "modprobe nbd"
+        modprobe nbd
+        echo "nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}"
+        nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}
+        echo "nbd mount done"
+        blkid
+  ;;
+esac

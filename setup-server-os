@@ -28,6 +28,8 @@ def get_kernel_path():
     """
     if 'system-arch' in cfg.modules:
         return 'vmlinuz-linux'
+    if 'system-debian' in cfg.modules:
+        return 'vmlinuz-' + os.uname()[2]
     else:
         raise RuntimeError("no system- module was given")
 
@@ -38,6 +40,8 @@ def get_initrd_path():
     """
     if 'system-arch' in cfg.modules:
         return 'initramfs-stiefel.img'
+    if 'system-debian' in cfg.modules:
+        return 'initrd.img-' + os.uname()[2]
     else:
         raise RuntimeError("could not find the kernel")
 
@@ -111,3 +115,8 @@ if 'system-arch' in cfg.modules:
         install_folder('overlays/server-os-arch-nbd')
 
     command('mkinitcpio', '-p', 'linux')
+
+if 'system-debian' in cfg.modules:
+    if 'nbd' in cfg.modules:
+        install_folder('overlays/server-os-debian')
+        command('update-initramfs', '-u', '-k', 'all')
