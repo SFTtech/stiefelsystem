@@ -21,31 +21,6 @@ ensure_root()
 cli = argparse.ArgumentParser()
 args = cli.parse_args()
 
-
-def get_kernel_path():
-    """
-    returns the path on the boot part of the kernel that should be stiefeled
-    """
-    if 'system-arch' in cfg.modules:
-        return 'vmlinuz-linux'
-    if 'system-debian' in cfg.modules:
-        return 'vmlinuz-' + os.uname()[2]
-    else:
-        raise RuntimeError("no system- module was given")
-
-
-def get_initrd_path():
-    """
-    returns the path on the boot part of the initrd that should be stiefeled
-    """
-    if 'system-arch' in cfg.modules:
-        return 'initramfs-stiefel.img'
-    if 'system-debian' in cfg.modules:
-        return 'initrd.img-' + os.uname()[2]
-    else:
-        raise RuntimeError("could not find the kernel")
-
-
 # ensure that all required tools are installed
 if shutil.which('ifrename') is None:
     raise RuntimeError("could not find ifrename")
@@ -72,8 +47,6 @@ if 'base' in cfg.modules:
         },
         "bootdisk": cfg.boot.disk,
         "bootpart": cfg.boot.part,
-        "kernel": get_kernel_path(),
-        "initrd": get_initrd_path(),
         "stiefelsystem-kernel": cfg.server_setup.stiefelsystem_kernel,
         "stiefelsystem-initrd": cfg.server_setup.stiefelsystem_initrd,
     }
@@ -109,6 +82,14 @@ if 'system-arch' in cfg.modules:
     edit.edit_bash_list('PRESETS', {'stiefel': 'at-end'})
     edit.add_or_edit_var('stiefel_image', '/boot/initramfs-stiefel.img', add_prefix='\n')
     edit.add_or_edit_var('stiefel_options', '-c /etc/mkinitcpio-stiefel.conf -S autodetect')
+    edit.write()
+
+    boot_config = {
+        "kernel": "vmlinuz-linux",
+        "initrd": "initramfs-stiefel.img",
+    }
+    edit = FileEditor('/boot/stiefelsystem.json')
+    edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
     edit.write()
 
     if 'nbd' in cfg.modules:
