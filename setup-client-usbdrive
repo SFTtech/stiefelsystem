@@ -21,6 +21,8 @@ command('lsblk')
 
 cli = argparse.ArgumentParser()
 cli.add_argument('blockdev')
+# some older BIOSes only boot if the boot partition starts at sector 32...
+cli.add_argument('--first-sector', type=int, default=32)
 args = cli.parse_args()
 
 if not os.path.exists(args.blockdev):
@@ -34,7 +36,7 @@ if not get_consent():
     raise SystemExit(1)
 
 # create partition table and write MBR
-command('sfdisk', args.blockdev, stdin="label: dos\n2048,1638400,c,*\n")
+command('sfdisk', args.blockdev, stdin=f"label: dos\n{args.first_sector},1638400,c,*\n")
 if 'system-arch' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/bios/mbr.bin', 'of=' + args.blockdev)
 elif 'system.debian' in cfg.modules:

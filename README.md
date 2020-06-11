@@ -85,6 +85,7 @@ I'd really like to use Y, but you haven't implemented support yet.
 
 - Unify create-initrd-nspawn and create-initrd-cpio
 - Allow skipping some of the more time-consuming parts of create-initrd-nspawn
+- setup-client-usbdrive: add a script to launch the client script in any linux's userland
 
 ## Network setup
 
