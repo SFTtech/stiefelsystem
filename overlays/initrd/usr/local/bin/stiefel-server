@@ -6,6 +6,7 @@ import io
 import json
 import multiprocessing
 import os
+import re
 import socket
 import subprocess
 import struct
@@ -94,8 +95,6 @@ CHALLENGE = base64.b64encode(os.urandom(16)).decode('ascii')
 
 BLKDEV = cmdlineargs["stiefel_bootdisk"]
 BOOTPART = cmdlineargs["stiefel_bootpart"]
-KERNEL = cmdlineargs["stiefel_kernel"]
-INITRD = cmdlineargs["stiefel_initrd"]
 UNSECURE = bool(int(cmdlineargs.get("stiefel_unsecure", "0")))
 
 multiprocessing.Process(target=continuous_network_setup).start()
@@ -116,15 +115,65 @@ with open("/etc/nbd-server/config", "w") as nbdconfigfile:
 print(f"opening NBD server for {BLKDEV}")
 subprocess.check_call(['systemctl', 'start', 'nbd-server'])
 
+def read_binary(filename):
+    if not os.path.isfile(filename):
+        return None
+    with open(filename, 'rb') as fileobj:
+        return fileobj.read()
+
+
+def find_kernel_and_initrd():
+    # kernel hints were manually created for the stiefelsystem
+    stiefelsystem_config = read_binary("/mnt/stiefelsystem.json")
+    if stiefelsystem_config is not None:
+        stiefelsystem_config_json = json.loads(stiefelsystem_config)
+        yield os.path.normpath(
+            b'/mnt/' + stiefelsystem_config_json['kernel'].encode('utf-8')
+        )
+        yield os.path.normpath(
+            b'/mnt/' + stiefelsystem_config_json['initrd'].encode('utf-8')
+        )
+        return
+
+    # try to determine kernel from syslinux config
+    syslinux_config = read_binary("/mnt/syslinux/syslinux.cfg")
+    if syslinux_config is not None:
+        yield os.path.normpath(os.path.join(
+            b'/mnt/syslinux',
+            re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
+        ))
+        yield os.path.normpath(os.path.join(
+            b'/mnt/syslinux',
+            re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
+        ))
+        return
+
+    # try to determine kernel from grub config
+    grub_config = read_binary("/mnt/grub/grub.cfg")
+    if grub_config is not None:
+        yield os.path.normpath(
+            b'/mnt/' +
+            re.search(rb'^\s*linux\s+(\S+)\s', grub_config, re.M).group(1)
+        )
+        yield os.path.normpath(
+            b'/mnt/' +
+            re.search(rb'^\s*initrd\s+(\S+)\s', grub_config, re.M).group(1)
+        )
+        return
+
+
 def get_boot_tar(challenge):
-    print("packing kernel and initrd")
-    # read the kernel and initrd
-    subprocess.check_call(['mount', '-oro', BOOTPART, '/mnt'])
-    with open(f'/mnt/{KERNEL}', 'rb') as fileobj:
-        kernelblob = fileobj.read()
-    with open(f'/mnt/{INITRD}', 'rb') as fileobj:
-        initrdblob = fileobj.read()
-    subprocess.check_call(['umount', '/mnt'])
+    print("reading kernel and initrd")
+    try:
+        subprocess.check_call(['mount', '-oro', BOOTPART, '/mnt'])
+        kernel, initrd = find_kernel_and_initrd()
+        print(f"kernel: {kernel.decode(errors='replace')!r}")
+        kernelblob = read_binary(kernel)
+        print(f"initrd: {initrd.decode(errors='replace')!r}")
+        initrdblob = read_binary(initrd)
+    finally:
+        subprocess.check_call(['umount', '/mnt'])
+
     # create the response TAR in-memory
     with io.BytesIO() as fileobj:
         with tarfile.open(fileobj=fileobj, mode='w') as tar:
