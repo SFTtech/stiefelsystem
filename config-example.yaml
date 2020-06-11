@@ -6,6 +6,8 @@ modules:
     # support for arch linux payload systems
     # takes care of mkinitcpio integration
     - system-arch
+    # support for debian linux payload systems
+    # system-debian
     # support for r8152-family realtek USB ethernet controllers
     - r8152
     # support for clevo notebook fan control
