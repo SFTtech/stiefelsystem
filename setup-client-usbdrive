@@ -35,10 +35,13 @@ if not get_consent():
 
 # create partition table and write MBR
 command('sfdisk', args.blockdev, stdin="label: dos\n2048,1638400,c,*\n")
-try:
+if 'system-arch' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/bios/mbr.bin', 'of=' + args.blockdev)
-except:
+elif 'system.debian' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/mbr/mbr.bin', 'of=' + args.blockdev) #debian
+else:
+    print("no system specified in config.yaml modules")
+    exit(1)
 # create filesystem
 command('mkfs.vfat', '-F', '16', partition)
 # install bootloader
