@@ -55,9 +55,8 @@ You need to
 The scripts in this repo automate all of those task (apart from the thinking...)
 
 - `cp config-example.yaml config.yaml` and edit it to your wishes. Select the modules that are appropriate for your system.
-- `sudo ./create-initrd-nspawn` prepares the debian-based initrd
-- you can check that out with `sudo ./test-nspawn`
-- `sudo ./create-initrd-cpio` packs the nspawn container into an actual compressed initrd.cpio file
+- `sudo ./create-initrd` prepares the debian-based initrd, as a folder and as an archive
+- you can check out the initrd with `sudo ./test-nspawn`
 - you can check out server and client interactions with `sudo ./test-qemu server` and `sudo ./test-qemu client`
 - `sudo ./setup-server-os` sets up your system, asking for permission for every operation. It sets up:
   - the stiefel-autokexec service
