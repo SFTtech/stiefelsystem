@@ -64,34 +64,89 @@ with contextlib.ExitStack() as exit_stack:
     elif args.mode == 'server':
         mac = "52:54:00:5f:70:03"
 
-        # create the disk image that will be served to the server
-        with open(tmppath('loop_file'), 'wb') as loop_file:
-            loop_file.truncate(2**32)  # 4 GiB sparse
-        # create partitions in loop file
-        command(
-            'sfdisk', loop_file.name,
-            stdin='label: dos\n2048,1638400,c,*\n'
-        )
-        # create the loop device
-        loop_device_name = command(
-            'losetup', '-fP', '--show', tmppath('loop_file'),
-            capture_stdout=True
-        )
-        loop_device_name = loop_device_name.decode().strip()
-        exit_stack.callback(lambda: command('losetup', '-d', loop_device_name))
-        partition_name = loop_device_name + 'p1'
-        # create filesystem on the partition
-        command('mkfs.vfat', '-F', '16', partition_name)
-        # mount filesystem, fill it with files, and unmount it
-        os.makedirs(tmppath('mountpoint'), exist_ok=True)
-        command('mount', partition_name, tmppath('mountpoint'))
-        try:
+        with contextlib.ExitStack() as setup_exit_stack:
+
+            # 4 GiB sparse image
+            disk_size = 2**32
+
+            # create the disk image that will be served to the server
+            with open(tmppath('loop_file'), 'wb') as loop_file:
+                loop_file.truncate(disk_size)
+
+            # create partitions in loop file
+            command(
+                'sfdisk', loop_file.name,
+                stdin=f'label: dos\n2048,{(disk_size // 512) - 2048},c,*\n'
+            )
+            # create the loop device
+            loop_device_name = command(
+                'losetup', '-fP', '--show', loop_file.name,
+                capture_stdout=True
+            )
+            loop_device_name = loop_device_name.decode().strip()
+            setup_exit_stack.callback(
+                lambda: command('losetup', '-d', loop_device_name))
+            bootpartition_name = loop_device_name + 'p1'
+
+            bootpart_luks = None
+            if cfg.boot.luks_block is not None:
+                luks_password = "sft.lol"
+                command('cryptsetup', 'luksFormat', bootpartition_name, '-',
+                        stdin=f'{luks_password}\n')
+
+                luks_mapped_name = 'stiefel-qemu-root'
+                command('cryptsetup', 'open', '--type=luks', '--key-file=-',
+                        bootpartition_name, luks_mapped_name,
+                        stdin=f'{luks_password}\n')
+                setup_exit_stack.callback(
+                    lambda: command('cryptsetup', 'close', luks_mapped_name))
+
+                bootpart_luks = bootpartition_name
+                bootpartition_name = f'/dev/mapper/{luks_mapped_name}'
+
+            if 'lvm' in cfg.modules:
+                command('pvcreate', bootpartition_name)
+                pv_device = bootpartition_name
+                setup_exit_stack.callback(
+                    lambda: command('pvremove', pv_device))
+
+                vg_name = 'qemustiefel'
+                command('vgcreate', vg_name, bootpartition_name)
+                setup_exit_stack.callback(
+                    lambda: command('vgremove', vg_name))
+
+                setup_exit_stack.callback(
+                    lambda: command('cp', '--sparse=always',
+                                    loop_file.name, tmppath('disk_image')))
+
+                setup_exit_stack.callback(
+                    lambda: command('vgchange', '--activate=n', vg_name))
+
+                command('lvcreate', '-n', 'boot', '-L', '1G', vg_name)
+                command('lvcreate', '-n', 'root', '-L', '2G', vg_name)
+
+                command('mkfs.ext4', '/dev/mapper/qemustiefel-root')
+
+                bootpartition_name = '/dev/mapper/qemustiefel-boot'
+
+            else:
+                setup_exit_stack.callback(
+                    lambda: command('mv', loop_file.name, tmppath('disk_image')))
+
+            # create filesystem on the partition
+            command('mkfs.vfat', '-F', '16', bootpartition_name)
+
+            # mount filesystem, fill it with files, and unmount it
+            os.makedirs(tmppath('mountpoint'), exist_ok=True)
+            command('mount', bootpartition_name, tmppath('mountpoint'))
+            setup_exit_stack.callback(
+                lambda: command('umount', tmppath('mountpoint')))
+
             command('cp', args.kernel, tmppath('mountpoint') + '/kernel')
             command('cp', args.initrd, tmppath('mountpoint') + '/initrd')
+
             with open(tmppath('mountpoint') + '/stiefelsystem.json', 'w') as fileobj:
                 json.dump({"kernel": "kernel", "initrd": "initrd"}, fileobj)
-        finally:
-            command('umount', tmppath('mountpoint'))
 
         # setup the bridge that allows connection to the client VM
         command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
@@ -99,13 +154,26 @@ with contextlib.ExitStack() as exit_stack:
         command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
         exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
 
+        # because inside qemu the loop-device is called vda
+        if bootpartition_name == loop_device_name + 'p1':
+            bootpartition_name = "/dev/vda1"
+
+        if bootpart_luks == loop_device_name + 'p1':
+            bootpart_luks = "/dev/vda1"
+
         cmdline = [
             "systemd.unit=stiefel-server.service",
             "stiefel_bootdisk=/dev/vda",
-            "stiefel_bootpart=/dev/vda1",
+            f"stiefel_bootpart={bootpartition_name}",
         ]
+
+        if cfg.boot.luks_block is not None:
+            cmdline.append(
+                f'stiefel_bootpart_luks={bootpart_luks}'
+            )
+
         qemu_args = [
-            "-drive", f"file={loop_device_name},format=raw,if=virtio"
+            "-drive", f"file={tmppath('disk_image')},format=raw,if=virtio"
         ]
 
     elif args.mode == 'test':

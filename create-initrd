@@ -40,8 +40,16 @@ if not args.skip_setup:
         'systemd-container',  # to allow launching inside nspawn during this script
         'systemd-sysv',  # to provide symlinks in /sbin: init, poweroff, ...
     ]
+
     if 'nbd' in cfg.modules:
         deb_packages.extend(['nbd-server'])
+
+    if 'lvm' in cfg.modules:
+        deb_packages.append('lvm2')
+
+    if cfg.boot.luks_block:
+        deb_packages.append('cryptsetup')
+
     deb_packages.extend(cfg.initrd.include_packages)
 
     # perform initial setup

@@ -94,6 +94,7 @@ def continuous_network_setup():
 CHALLENGE = base64.b64encode(os.urandom(16)).decode('ascii')
 
 BLKDEV = cmdlineargs["stiefel_bootdisk"]
+BOOTPART_LUKS = cmdlineargs.get("stiefel_bootpart_luks")
 BOOTPART = cmdlineargs["stiefel_bootpart"]
 UNSECURE = bool(int(cmdlineargs.get("stiefel_unsecure", "0")))
 
@@ -164,6 +165,16 @@ def find_kernel_and_initrd():
 
 def get_boot_tar(challenge):
     print("reading kernel and initrd")
+
+    if BOOTPART_LUKS:
+        # open luks device to fetch kernel and initrd from it
+        print("opening luks-crypted device...")
+        mapped_name = 'stiefelboot'
+        while os.path.exists(f"/dev/mapper/{mapped_name}"):
+            mapped_name += '_'
+
+        subprocess.check_call(['cryptsetup', 'open', '--type=luks',
+                               BOOTPART_LUKS, mapped_name])
     try:
         subprocess.check_call(['mount', '-oro', BOOTPART, '/mnt'])
         kernel, initrd = find_kernel_and_initrd()
@@ -173,6 +184,9 @@ def get_boot_tar(challenge):
         initrdblob = read_binary(initrd)
     finally:
         subprocess.check_call(['umount', '/mnt'])
+
+    if BOOTPART_LUKS:
+        subprocess.check_call(['cryptsetup', 'close', mapped_name])
 
     # create the response TAR in-memory
     with io.BytesIO() as fileobj:

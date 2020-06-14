@@ -46,6 +46,7 @@ if 'base' in cfg.modules:
             "adapters": cfg.autokexec.macs,
         },
         "bootdisk": cfg.boot.disk,
+        "bootpart-luks": cfg.boot.luks_block,
         "bootpart": cfg.boot.part,
         "stiefelsystem-kernel": cfg.server_setup.stiefelsystem_kernel,
         "stiefelsystem-initrd": cfg.server_setup.stiefelsystem_initrd,

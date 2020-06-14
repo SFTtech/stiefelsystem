@@ -7,21 +7,33 @@ modules:
     # takes care of mkinitcpio integration
     - system-arch
     # support for debian linux payload systems
-    # system-debian
+    #- system-debian
+    # support for gentoo payload systems
+    #- system-gentoo
     # support for r8152-family realtek USB ethernet controllers
     - r8152
     # support for clevo notebook fan control
     - clevo-fancontrol
     # stiefel through the nbd protocol
     - nbd
+    # your /boot or / device is on lvm
+    - lvm
     # debug mode: the initrds will be much larger and much more usable
     #- debug
 
 boot:
     # the disk that is shared by the server
     disk: /dev/disk/by-id/ata-Samsung_SSD_860_EVO_1TB_S3Z9NB0K119516H
-    # the boot where the server gets the kernel and initrd
-    part: /dev/disk/by-partlabel/boot
+    # the boot partition where the server gets the kernel and initrd
+    part:
+        # directly accessible boot partition block device
+        type: plain
+        block: /dev/disk/by-partlabel/boot
+
+        # luks-encrypted boot partition
+        #type: luks
+        #luks_block: /dev/disk/by-uuid/e9aaxe22-8a07-4d0d-8c5f-b2b55ddc7cbb
+        #block: /dev/lollvmvg/boot
     # the cmdline that will be given to the stiefeled system
     cmdline:
         - root=PARTUUID=fdb19589-ad52-4228-996a-50fb34854d2c

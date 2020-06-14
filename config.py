@@ -77,7 +77,19 @@ class BootConfig:
     """
     def __init__(self, raw):
         self.disk = ensure_string(raw['disk'])
-        self.part = ensure_string(raw['part'])
+
+        self.method = ensure_string(raw['part']['type'])
+        if self.method == "plain":
+            self.luks_block = None
+            self.part = ensure_string(raw['part']['block'])
+
+        elif self.method == "luks":
+            self.luks_block = ensure_string(raw['part']['luks_block'])
+            self.part = ensure_string(raw['part']['block'])
+
+        else:
+            raise ValueError(f"unknown boot disk method {self.method!r}")
+
         self.cmdline = ensure_stringlist(raw['cmdline'])
 
 
