@@ -39,7 +39,7 @@ if not get_consent():
 command('sfdisk', args.blockdev, stdin=f"label: dos\n{args.first_sector},1638400,c,*\n")
 if 'system-arch' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/bios/mbr.bin', 'of=' + args.blockdev)
-elif 'system.debian' in cfg.modules:
+elif 'system-debian' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/mbr/mbr.bin', 'of=' + args.blockdev) #debian
 else:
     print("no system specified in config.yaml modules")
