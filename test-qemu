@@ -34,6 +34,7 @@ cli = argparse.ArgumentParser()
 cli.add_argument('--kernel', default=cfg.path.initrd + '/vmlinuz')
 cli.add_argument('--initrd', default=cfg.path.cpio)
 cli.add_argument('mode')
+cli.add_argument('--forward-usb')
 args = cli.parse_args()
 
 with contextlib.ExitStack() as exit_stack:
@@ -104,8 +105,21 @@ with contextlib.ExitStack() as exit_stack:
             "stiefel_bootpart=/dev/vda1",
         ])
 
+    elif args.mode == 'test':
+        mac = "52:54:00:5f:70:04"
+
+        # network link makes sense to have even in the test vm
+        command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
+        command('ip', 'link', 'set', 'dev', 'br0', 'up')
+        command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
+        exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
+
+        extra_qemu_args = []
+
+        cmdline = ""
+
     else:
-        cli.error("mode must be 'client' or 'server'")
+        cli.error("mode must be 'client', 'server' or 'test'")
 
     with open(tmppath('ifup-script'), 'w') as ifup_script:
         ifup_script.writelines([
@@ -116,9 +130,24 @@ with contextlib.ExitStack() as exit_stack:
         ])
     os.chmod(tmppath('ifup-script'), 0o755)
 
-    print("quit qemu with C-A X")
-    print("press ENTER to enter simulation")
-    input()
+    if args.forward_usb is not None:
+        try:
+            vid, did = args.forward_usb.split(':')
+            if len(vid) != 4 or len(did) != 4:
+                raise ValueError()
+        except ValueError:
+            cli.error("--forward-usb expects VID:DID")
+
+        extra_qemu_args.extend([
+            "-usb",
+            "-device", f"usb-host,vendorid=0x{vid},productid=0x{did}"
+        ])
+
+
+    if args.mode != 'test':
+        print("quit qemu with C-A X")
+        print("press ENTER to enter simulation")
+        input()
 
     command(
         "qemu-system-x86_64",
