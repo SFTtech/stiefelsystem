@@ -205,6 +205,7 @@ if not args.skip_setup:
             cfg.path.initrd_devel + "/root/r8152/r8152.ko",
             cfg.path.initrd + f"/lib/modules/{kernel_name}/kernel/drivers/net/usb/",
         )
+        os.makedirs(cfg.path.initrd + "/etc/udev/rules.d", exist_ok=True)
         command(
             "cp",
             cfg.path.initrd_devel + "/root/r8152/50-usb-realtek-net.rules",
