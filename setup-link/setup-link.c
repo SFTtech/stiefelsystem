@@ -28,6 +28,25 @@
 int socket_fd;
 
 /**
+ * copies an interface name from src to dest.
+ *
+ * src must be null-terminated or at least 15 bytes long.
+ * dest must be at least 16 bytes long. it will have at least
+ * one null byte at position 15, and possibly more if the name
+ * in src is shorter.
+ */
+void ifnamcpy(char *dest, const char *src) {
+    int pos = 0;
+    for (; pos < IFNAMSIZ; pos++) {
+        if (src[pos] == '\0' || pos > 15) { break; }
+        dest[pos] = src[pos];
+    }
+    for (; pos < IFNAMSIZ; pos++) {
+        dest[pos] = '\0';
+    }
+}
+
+/**
  * sets the interface up or down.
  * if up == 0, sets it down.
  * otherwise, sets it up.
@@ -41,7 +60,7 @@ int set_if_up(const char *ifname, int up) {
     // the interface exists, but it is down! set it up.
     struct ifreq ifr;
     explicit_bzero(&ifr, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+    ifnamcpy(ifr.ifr_name, ifname);
     // get interface flags
     if (ioctl(socket_fd, SIOCGIFFLAGS, &ifr) < 0) {
         perror("SIOCGIFFLAGS");
@@ -74,7 +93,7 @@ int set_if_up(const char *ifname, int up) {
 int test_if_up(const char *ifname) {
     struct ifreq ifr;
     explicit_bzero(&ifr, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+    ifnamcpy(ifr.ifr_name, ifname);
     // get interface flags
     if (ioctl(socket_fd, SIOCGIFFLAGS, &ifr) < 0) {
         // could not get flags, probably the interface doesn't exist
@@ -98,7 +117,7 @@ int get_if_mac(const char *ifname, char *mac)
 {
     struct ifreq ifr;
     explicit_bzero(&ifr, sizeof(ifr));
-    strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+    ifnamcpy(ifr.ifr_name, ifname);
     if (ioctl(socket_fd, SIOCGIFHWADDR, &ifr) < 0) {
         perror("SIOCGIFHWADDR");
         return -1;
@@ -131,7 +150,7 @@ char *find_if_by_mac(const char *mac) {
             struct sockaddr_ll *s = (struct sockaddr_ll*)ifa->ifa_addr;
             if (memcmp(s->sll_addr, mac, 6) == 0) {
                 // found it
-                strncpy(name, ifa->ifa_name, sizeof(name));
+                ifnamcpy(name, ifa->ifa_name);
                 freeifaddrs(ifap);
                 return name;
             }
@@ -152,8 +171,8 @@ char *find_if_by_mac(const char *mac) {
 int rename_if(const char *old_name, const char *new_name) {
     struct ifreq ifr;
     explicit_bzero(&ifr, sizeof(ifr));
-    strncpy(ifr.ifr_name, old_name, sizeof(ifr.ifr_name));
-    strncpy(ifr.ifr_newname, new_name, sizeof(ifr.ifr_newname));
+    ifnamcpy(ifr.ifr_name, old_name);
+    ifnamcpy(ifr.ifr_newname, new_name);
     if (ioctl(socket_fd, SIOCSIFNAME, &ifr) < 0) {
         if (errno == EBUSY) {
             // probably because the interface is up
@@ -176,7 +195,7 @@ int parse_mac(const char *mac_string, char *mac) {
         return -1;
     }
 
-    int values[6];
+    unsigned int values[6];
     int ret = sscanf(
         mac_string,
         "%02x:%02x:%02x:%02x:%02x:%02x%*c",
@@ -187,7 +206,7 @@ int parse_mac(const char *mac_string, char *mac) {
     }
 
     for (int i = 0; i < 6; i++) {
-        if (values[i] < 0 || values[i] > 255) {
+        if (values[i] > 255) {
             return -1;
         }
         mac[i] = values[i] & 0xff;
@@ -197,8 +216,8 @@ int parse_mac(const char *mac_string, char *mac) {
 
 void handle(const char *link_name, const char *mac) {
     int res = test_if_up(link_name);
-    // TODO: as soon as IFF_RUNNING is set in the interface flags (res=2 ?),
-    // we should perform some post-up action (e.g. add it to the wireguard if)
+    // TODO: as soon as IFF_UP is set in the interface flags,
+    // we must perform some post-up action (e.g. add it to the wireguard cfg)
     if (res == 1) {
         // interface is up, all is fine.
         return;
