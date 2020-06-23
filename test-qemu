@@ -35,6 +35,8 @@ cli.add_argument('--kernel', default=cfg.path.initrd + '/vmlinuz')
 cli.add_argument('--initrd', default=cfg.path.cpio)
 cli.add_argument('mode')
 cli.add_argument('--forward-usb')
+cli.add_argument('--graphical', action='store_true')
+cli.add_argument('--skip-confirm', action='store_true')
 args = cli.parse_args()
 
 with contextlib.ExitStack() as exit_stack:
@@ -43,20 +45,21 @@ with contextlib.ExitStack() as exit_stack:
         return os.path.join(tmpdir, name)
 
     if args.mode == 'client':
+        # client mode only works when a server is already running
         mac = "52:54:00:5f:70:02"
 
-        extra_qemu_args = []
 
         inner_cmdline = base64.b64encode(" ".join([
             "lol",
             "wtf"
         ]).encode('utf-8')).decode('ascii')
 
-        cmdline = " ".join([
+        cmdline = [
             "systemd.unit=stiefel-client.service",
             "nomodeset",
             "stiefel_innercmdline=" + inner_cmdline,
-        ])
+        ]
+        qemu_args = []
     elif args.mode == 'server':
         mac = "52:54:00:5f:70:03"
 
@@ -95,15 +98,14 @@ with contextlib.ExitStack() as exit_stack:
         command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
         exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
 
-        extra_qemu_args = [
-            "-drive", f"file={loop_device_name},format=raw,if=virtio"
-        ]
-
-        cmdline = " ".join([
+        cmdline = [
             "systemd.unit=stiefel-server.service",
             "stiefel_bootdisk=/dev/vda",
             "stiefel_bootpart=/dev/vda1",
-        ])
+        ]
+        qemu_args = [
+            "-drive", f"file={loop_device_name},format=raw,if=virtio"
+        ]
 
     elif args.mode == 'test':
         mac = "52:54:00:5f:70:04"
@@ -114,9 +116,8 @@ with contextlib.ExitStack() as exit_stack:
         command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
         exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
 
-        extra_qemu_args = []
-
-        cmdline = ""
+        cmdline = []
+        qemu_args = []
 
     else:
         cli.error("mode must be 'client', 'server' or 'test'")
@@ -138,16 +139,19 @@ with contextlib.ExitStack() as exit_stack:
         except ValueError:
             cli.error("--forward-usb expects VID:DID")
 
-        extra_qemu_args.extend([
+        qemu_args.extend([
             "-usb",
             "-device", f"usb-host,vendorid=0x{vid},productid=0x{did}"
         ])
 
+    if not args.graphical:
+        cmdline.insert(0, "console=ttyS0")
+        qemu_args.append("-nographic")
 
-    if args.mode != 'test':
         print("quit qemu with C-A X")
-        print("press ENTER to enter simulation")
-        input()
+        if not args.skip_confirm and not args.graphical:
+            print("press ENTER to enter simulation")
+            input()
 
     command(
         "qemu-system-x86_64",
@@ -155,9 +159,8 @@ with contextlib.ExitStack() as exit_stack:
         "-m", "10240",
         "-kernel", args.kernel,
         "-initrd", args.initrd,
-        "-nographic",
         "-netdev", f"tap,id=network0,script={tmppath('ifup-script')},downscript=no",
         "-device", f"virtio-net,netdev=network0,mac={mac}",
-        "-append", "console=ttyS0 " + cmdline,
-        *extra_qemu_args
+        "-append", " ".join(cmdline),
+        *qemu_args
     )
