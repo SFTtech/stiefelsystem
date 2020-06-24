@@ -119,6 +119,86 @@ def command(*cmd, silent=False, nspawn=None, shell=False, confirm=False,
         return stdout
 
 
+class CommandSequence:
+    """
+    A helper for running multiple commands in a sequence,
+    with some commands being conditional on the other's success.
+
+    Instead of raising exceptions, the commands store their result
+    in their result variable when they have run.
+    """
+    class CommandResult:
+        """
+        Commands store their results here when they have run.
+        Can be evaluated as a boolean.
+        """
+        def __init__(self, name):
+            self.name = name
+            self.value = None
+
+        def get(self):
+            """
+            Returns the value. Raises RuntimeError if it is called before
+            the result has been stored.
+            """
+            if self.value is None:
+                raise RuntimeError(
+                    f"command result for {self.name!r} "
+                    "was requested before the command has finished"
+                )
+            return self.value
+
+        def done(self, value):
+            """
+            Stores a result
+            """
+            self.value = value
+
+        def __bool__(self):
+            return self.get()
+
+    def __init__(self):
+        self.commands = []
+
+    def add(self, *args, condition=None, **kwargs):
+        """
+        Adds a new command. Has the same invocation and semantics as command().
+        The command is not run immediately but instead stored and will be
+        called later, during run().
+        In addition, it accepts an optional argument 'condition', which will
+        be evaluated on-the-fly to decide whether the command should be run.
+        Returns the result object where the command's result will be stored.
+        """
+        result = self.CommandResult(repr((args, kwargs)))
+        self.commands.append((result, condition, args, kwargs))
+        return result
+
+    def run(self):
+        """
+        Runs all the commands that have been added so far.
+
+        After running all the commands, raises an exception if at least one
+        of them has failed.
+        """
+        exceptions = []
+        for result, condition, args, kwargs in self.commands:
+            if condition is not None and not condition():
+                continue
+            try:
+                command(*args, **kwargs)
+            except BaseException as exc:
+                print(exc)
+                exceptions.append(exc)
+                result.done(False)
+            else:
+                result.done(True)
+        self.commands.clear()
+        if exceptions:
+            raise RuntimeError(
+                f"at least one command in the sequence failed: {exceptions!r}"
+            )
+
+
 def initrd_write(path, *lines, content=None, append=False):
     """
     Writes a file in the initrd.
