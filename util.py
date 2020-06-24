@@ -50,7 +50,8 @@ def get_consent():
 
 
 def command(*cmd, silent=False, nspawn=None, shell=False, confirm=False,
-            stdin=None, capture_stdout=False, env=None, get_retval=False):
+            stdin=None, capture_stdout=False, env=None, get_retval=False,
+            cwd='.'):
     """
     Prints and runs the given command.
 
@@ -76,6 +77,8 @@ def command(*cmd, silent=False, nspawn=None, shell=False, confirm=False,
     @param get_retval
         defaults to False. If True, the command return code is returned,
         as an integer, instead of verifying that the command has succeeded.
+    @param cwd
+        defaults to None. If given, the command is run in this directory.
     """
     if capture_stdout and get_retval:
         raise RuntimeError("cannot capture stdout AND get retval")
@@ -106,7 +109,8 @@ def command(*cmd, silent=False, nspawn=None, shell=False, confirm=False,
 
     proc = subprocess.Popen(cmd,
           stdin=None if stdin is None else subprocess.PIPE,
-          stdout=subprocess.PIPE if capture_stdout else None
+          stdout=subprocess.PIPE if capture_stdout else None,
+          cwd=cwd
     )
     if isinstance(stdin, str):
         stdin = stdin.encode('utf-8')
