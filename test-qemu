@@ -37,6 +37,7 @@ cli.add_argument('mode')
 cli.add_argument('--forward-usb')
 cli.add_argument('--graphical', action='store_true')
 cli.add_argument('--skip-confirm', action='store_true')
+cli.add_argument('--extra-files')
 args = cli.parse_args()
 
 with contextlib.ExitStack() as exit_stack:
@@ -152,6 +153,21 @@ with contextlib.ExitStack() as exit_stack:
         if not args.skip_confirm and not args.graphical:
             print("press ENTER to enter simulation")
             input()
+
+    if args.extra_files is not None:
+        # pack the extra files into an CPIO archive
+        extra_cpio = command(
+            "find . -depth -print0 | bsdcpio -0 -o -H newc | gzip -1",
+            shell=True,
+            cwd=args.extra_files,
+            capture_stdout=True,
+            env={"LANG": "C"},
+        )
+        with open(args.initrd, 'rb') as initrd_rfile:
+            args.initrd = tmppath('initrd-concatenated')
+            with open(args.initrd, 'wb') as initrd_wfile:
+                initrd_wfile.write(initrd_rfile.read())
+                initrd_wfile.write(extra_cpio)
 
     command(
         "qemu-system-x86_64",
