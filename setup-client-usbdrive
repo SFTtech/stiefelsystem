@@ -35,15 +35,20 @@ warn(f'wiping entire drive at {args.blockdev!r} to create {partition!r}')
 if not get_consent():
     raise SystemExit(1)
 
+# TODO create gpt table
+
 # create partition table and write MBR
 command('sfdisk', args.blockdev, stdin=f"label: dos\n{args.first_sector},1638400,c,*\n")
 if 'system-arch' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/bios/mbr.bin', 'of=' + args.blockdev)
 elif 'system-debian' in cfg.modules:
     command('dd', 'if=/usr/lib/syslinux/mbr/mbr.bin', 'of=' + args.blockdev) #debian
+elif 'system-gentoo' in cfg.modules:
+    command('dd', 'if=/usr/share/syslinux/mbr.bin', 'of=' + args.blockdev)
 else:
     print("no system specified in config.yaml modules")
     exit(1)
+
 # create filesystem
 command('mkfs.vfat', '-F', '16', partition)
 # install bootloader
@@ -70,16 +75,13 @@ with tempfile.TemporaryDirectory() as tmpdir:
             'status=progress',
         )
 
-        inner_cmdline = " ".join(cfg.boot.cmdline).encode()
-
         cmdline = " ".join([
             # the client system shouldn't modeset.
             # if it modesets, then the early boot steps of the actual target
-            # initrd won't have working video output, makeing debugging
+            # initrd won't have working video output, making debugging
             # them harder.
             "nomodeset",
             "systemd.unit=stiefel-client.service",
-            "stiefel_innercmdline=" + base64.b64encode(inner_cmdline).decode(),
         ])
 
         with open(os.path.join(tmpdir, 'syslinux.cfg'), 'w') as syslinuxcfg:
@@ -87,4 +89,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
     finally:
         command('umount', tmpdir)
 
+print("synching io buffers...")
 os.sync()
+print("done.")

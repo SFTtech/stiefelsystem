@@ -90,7 +90,9 @@ class BootConfig:
         else:
             raise ValueError(f"unknown boot disk method {self.method!r}")
 
-        self.cmdline = ensure_stringlist(raw['cmdline'])
+        self.kernel = ensure_string(raw['load']['kernel'])
+        self.initrd = ensure_string(raw['load']['initrd'])
+        self.cmdline = ensure_stringlist(raw['load']['cmdline'])
 
 
 class AutoKexecConfig:
@@ -108,6 +110,7 @@ class ServerSetupConfig:
     def __init__(self, raw):
         self.stiefelsystem_kernel = ensure_string(raw['stiefelsystem-kernel'])
         self.stiefelsystem_initrd = ensure_string(raw['stiefelsystem-initrd'])
+        self.cmdline = ensure_stringlist(raw['cmdline'])
 
 
 class InitRDConfig:

@@ -27,8 +27,6 @@ for entry in cmdline.strip().split():
     except ValueError:
         continue
 
-INNER_CMDLINE = base64.b64decode(cmdlineargs["stiefel_innercmdline"]).decode()
-
 print(f"config: {cmdlineargs}")
 
 with open('/aes-key', 'rb') as keyfile:
@@ -125,6 +123,12 @@ tar_blob = cipher.decrypt_and_verify(ciphertext, mac)
 del nonce, ciphertext, mac
 print('decryption done')
 
+stiefelmodules = []
+
+# cmdline arguments for the to-be-stiefeled kernel
+# these are supplied by stiefel-server.
+inner_cmdline = ''
+
 with io.BytesIO(tar_blob) as tarfileobj:
     with tarfile.open(fileobj=tarfileobj, mode='r') as tar:
         # validate challenge response
@@ -135,22 +139,56 @@ with io.BytesIO(tar_blob) as tarfileobj:
                 print(f"challenge response: {challenge_response}")
                 print(f"expected response: {expected_response}")
                 raise ValueError('bad challenge response - replay attack?')
+
         # extract this tar file
         for member in tar.getmembers():
             with tar.extractfile(member) as fileobj:
                 data = fileobj.read()
             print(f'    {member.name}: {len(data)} bytes')
-            if member.name != 'challenge':
+            if member.name == 'challenge':
+                continue
+            elif member.name == 'cmdline':
+                # cmdline for the kexec'd real kernel
+                inner_cmdline = data.decode().strip()
+            elif member.name == 'stiefelmodules':
+                # cmdline for the kexec'd real kernel
+                stiefelmodules = data.decode().split(" ")
+            else:
                 with open(f'/{member.name}', 'wb') as fileobj:
                     fileobj.write(data)
 
-CMDLINE = (
-    INNER_CMDLINE +
-    " stiefel_nbdhost=" + SERVER.replace(SERVER_INTERFACE, "stiefellink") +
-    " stiefel_nbdname=stiefelblock" +  # name is hardcoded in stiefel-server
-    " stiefel_link=" + SERVER_INTERFACE_MAC
-)
+print('stiefelmodules: %s' % "\n".join(stiefelmodules))
+print('server cmdline: %s' % "\n".join(inner_cmdline.split()))
 
-print(f"booting into new kernel, cmdline={CMDLINE!r}")
+# additional inner cmdline arguments given to the stiefel-client-kernel-cmdline
+inner_cmdline += ' ' + base64.b64decode(cmdlineargs.get("stiefel_innercmdline", "")).decode()
+
+
+if any(mod in stiefelmodules for mod in ('system-debian', 'system-arch')):
+    CMDLINE = (
+        inner_cmdline +
+        " stiefel_nbdhost=" + SERVER.replace(SERVER_INTERFACE, "stiefellink") +
+        " stiefel_nbdname=stiefelblock" +  # name is hardcoded in stiefel-server
+        " stiefel_link=" + SERVER_INTERFACE_MAC
+    )
+
+elif 'system-gentoo' in stiefelmodules:
+    # dracut nbd & network invocation from man dracut.cmdline:
+    # netroot=nbd:srv:port[:fstype[:rootflags(fsflags)[:nbdopts]]]
+    CMDLINE = (
+        inner_cmdline +
+        " ifname=stiefellink:" + SERVER_INTERFACE_MAC +
+        " ip=stiefellink:link6" +
+        " netroot=nbd:[" + SERVER.replace(SERVER_INTERFACE, "stiefellink") + "]:stiefelblock:::-persist"
+    )
+else:
+    raise Exception("with the given stiefelsystem modules, "
+                    "couldn't construct kexec cmdline")
+
+print("booting into received kernel, cmdline:")
+for cmd in CMDLINE.split():
+    print(f"{cmd!r}")
+
+time.sleep(2)
 
 subprocess.check_call(['kexec', '/kernel', '--ramdisk=/initrd', '--command-line=' + CMDLINE])

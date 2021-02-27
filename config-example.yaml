@@ -51,7 +51,7 @@ autokexec:
 
 server-setup:
     # how to setup the system that boots the stiefelsystem server
-    # the config json is always placed in /etc/stiefelsystem.json
+    # the config json is always placed in /boot/stiefelsystem.json
 
     # the kernel of the stiefelsystem
     # both this kernel and the initrd are multi-purpose;
@@ -60,6 +60,10 @@ server-setup:
     stiefelsystem-kernel: /var/local/lib/stiefelsystem/kernel
     # the initrd of the stiefelsystem
     stiefelsystem-initrd: /var/local/lib/stiefelsystem/initrd
+
+    # kernel cmdline options for the stiefel-server kernel
+    cmdline:
+        - ro
 
 # instructions for generating the initrd
 initrd:

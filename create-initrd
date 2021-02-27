@@ -20,15 +20,22 @@ cli.add_argument('--debian-mirror', default='http://mirror.stusta.de/debian/')
 cli.add_argument('--out', default=cfg.path.cpio)
 cli.add_argument('--compressor', default=cfg.packing.compressor)
 cli.add_argument('--skip-setup', action='store_true')
+cli.add_argument('--tmp-work', action='store_true',
+                 help='use a tmpfs for workk and cachedir')
 args = cli.parse_args()
 
 if not args.skip_setup:
     # discard existing ramdisk content
     umount(cfg.path.initrd_devel)
     umount(cfg.path.work)
+
+    os.makedirs(cfg.path.work, exist_ok=True)
+    os.makedirs(cfg.path.cache, exist_ok=True)
+
     # provide the various tmpfses
-    mount_tmpfs(cfg.path.work)
-    mount_tmpfs(cfg.path.cache)
+    if args.tmp_work:
+        mount_tmpfs(cfg.path.work)
+        mount_tmpfs(cfg.path.cache)
 
     deb_packages = [
         'ifrename',  # needed by the payload scripts
@@ -47,17 +54,25 @@ if not args.skip_setup:
     if 'lvm' in cfg.modules:
         deb_packages.append('lvm2')
 
+    if 'i915' in cfg.modules:
+        deb_packages.append('firmware-misc-nonfree')
+
     if cfg.boot.luks_block:
         deb_packages.append('cryptsetup')
 
     deb_packages.extend(cfg.initrd.include_packages)
 
     # perform initial setup
+    # this logs to $workdir/$workdir_subpath_initrd/debootstrap/debootstrap.log
+    # -> usually "workdir/initrd.nspawn/debootstrap/debootstrap.log"
+    print(f"running debootstrap with log {cfg.path.initrd}/debootstrap/debootstrap.log")
     command(
         'debootstrap',
         '--include=' + ','.join(deb_packages),
         '--cache-dir=' + os.path.abspath(cfg.path.cache),
         '--variant=minbase',
+        '--components=main,contrib,non-free',
+        '--verbose',
         'stable',
         cfg.path.initrd,
         args.debian_mirror

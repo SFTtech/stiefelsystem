@@ -26,19 +26,31 @@ from config import CONFIG as cfg
 from util import (
     command,
     ensure_root,
+    install_binary,
 )
 
 ensure_root()
 
 cli = argparse.ArgumentParser()
-cli.add_argument('--kernel', default=cfg.path.initrd + '/vmlinuz')
-cli.add_argument('--initrd', default=cfg.path.cpio)
+cli.add_argument('--kernel', default=cfg.path.initrd + '/vmlinuz',
+                 help='the kernel to be provided to a stiefel-client')
+cli.add_argument('--initrd', default=cfg.path.cpio,
+                 help='the initrd to be delivered to a stiefel-client')
+
+cli.add_argument('--srv-kernel', default=cfg.path.initrd + '/vmlinuz',
+                 help='the kernel to booted for this stiefel-server')
+cli.add_argument('--srv-initrd', default=cfg.path.cpio,
+                 help='the initrd to loaded to this stiefel-server')
+
 cli.add_argument('mode')
 cli.add_argument('--forward-usb')
 cli.add_argument('--graphical', action='store_true')
+cli.add_argument('--serialnetwork', action='store_true',
+                 help="attach ttyS0 to the VM, exposed as telnet tcp port")
 cli.add_argument('--skip-confirm', action='store_true')
 cli.add_argument('--extra-files')
 args = cli.parse_args()
+
 
 with contextlib.ExitStack() as exit_stack:
     tmpdir = exit_stack.enter_context(tempfile.TemporaryDirectory())
@@ -49,60 +61,92 @@ with contextlib.ExitStack() as exit_stack:
         # client mode only works when a server is already running
         mac = "52:54:00:5f:70:02"
 
+        # this is passed to the kernel to be stiefeled
+        # they are used in addition to the options served by
+        # stiefel-server from /boot/stiefelsystem.json
+        inner_cmdline = [
+            "vga=795",
+            "console=ttyS0",
+        ]
 
-        inner_cmdline = base64.b64encode(" ".join([
-            "lol",
-            "wtf"
-        ]).encode('utf-8')).decode('ascii')
+        if 'lvm' in cfg.modules:
+            inner_cmdline.append("root=/dev/mapper/qemustiefel-root")
+        else:
+            inner_cmdline.append("root=/dev/sda2")
+
+        if not args.graphical:
+            inner_cmdline.append("console=ttyS0")
+
+        inner_cmdline_b64 = base64.b64encode(" ".join(inner_cmdline).encode('utf-8')).decode('ascii')
 
         cmdline = [
             "systemd.unit=stiefel-client.service",
             "nomodeset",
-            "stiefel_innercmdline=" + inner_cmdline,
+            "stiefel_innercmdline=" + inner_cmdline_b64,
         ]
-        qemu_args = []
+        qemu_args = ['-gdb', 'tcp::1234']
+
     elif args.mode == 'server':
         mac = "52:54:00:5f:70:03"
 
         with contextlib.ExitStack() as setup_exit_stack:
 
             # 4 GiB sparse image
-            disk_size = 2**32
+            disk_size = 4 * 1024 ** 3
 
             # create the disk image that will be served to the server
             with open(tmppath('loop_file'), 'wb') as loop_file:
                 loop_file.truncate(disk_size)
 
             # create partitions in loop file
-            command(
-                'sfdisk', loop_file.name,
-                stdin=f'label: dos\n2048,{(disk_size // 512) - 2048},c,*\n'
-            )
+
+            if 'lvm' in cfg.modules:
+                # one gpt partition for the whole disk
+                command('sgdisk', '-n', '0:0:0', loop_file.name)
+            else:
+                # gpt boot and root partition
+                # 1G boot, the rest for root (like lvm below)
+                command(
+                    'sgdisk', '-n', '0:0:+1G', '-n', '0:0:0', loop_file.name
+                )
+
             # create the loop device
             loop_device_name = command(
                 'losetup', '-fP', '--show', loop_file.name,
                 capture_stdout=True
-            )
-            loop_device_name = loop_device_name.decode().strip()
+            ).decode().strip()
+
             setup_exit_stack.callback(
                 lambda: command('losetup', '-d', loop_device_name))
+
             bootpartition_name = loop_device_name + 'p1'
+            rootpartition_name = loop_device_name + 'p2'
 
             bootpart_luks = None
+            bootpart_luks_uuid = None
             if cfg.boot.luks_block is not None:
                 luks_password = "sft.lol"
+                command('echo', 'The LUKS password is: ', luks_password)
                 command('cryptsetup', 'luksFormat', bootpartition_name, '-',
-                        stdin=f'{luks_password}\n')
+                        stdin=f'{luks_password}')
 
                 luks_mapped_name = 'stiefel-qemu-root'
                 command('cryptsetup', 'open', '--type=luks', '--key-file=-',
                         bootpartition_name, luks_mapped_name,
-                        stdin=f'{luks_password}\n')
+                        stdin=f'{luks_password}')
                 setup_exit_stack.callback(
                     lambda: command('cryptsetup', 'close', luks_mapped_name))
 
                 bootpart_luks = bootpartition_name
                 bootpartition_name = f'/dev/mapper/{luks_mapped_name}'
+
+                bootpart_luks_uuid = command(
+                    'blkid',
+                    '--output', 'value',
+                    '--match-tag', 'UUID',
+                    bootpart_luks,
+                    capture_stdout=True
+                ).decode().strip()
 
             if 'lvm' in cfg.modules:
                 command('pvcreate', bootpartition_name)
@@ -112,8 +156,9 @@ with contextlib.ExitStack() as exit_stack:
 
                 vg_name = 'qemustiefel'
                 command('vgcreate', vg_name, bootpartition_name)
+                # use extreme caution here: this removes a vg!
                 setup_exit_stack.callback(
-                    lambda: command('vgremove', vg_name))
+                    lambda: command('vgremove', '-y', vg_name))
 
                 setup_exit_stack.callback(
                     lambda: command('cp', '--sparse=always',
@@ -122,11 +167,11 @@ with contextlib.ExitStack() as exit_stack:
                 setup_exit_stack.callback(
                     lambda: command('vgchange', '--activate=n', vg_name))
 
+                # like the gpt partitions above
                 command('lvcreate', '-n', 'boot', '-L', '1G', vg_name)
                 command('lvcreate', '-n', 'root', '-L', '2G', vg_name)
 
-                command('mkfs.ext4', '/dev/mapper/qemustiefel-root')
-
+                rootpartition_name = '/dev/mapper/qemustiefel-root'
                 bootpartition_name = '/dev/mapper/qemustiefel-boot'
 
             else:
@@ -135,18 +180,69 @@ with contextlib.ExitStack() as exit_stack:
 
             # create filesystem on the partition
             command('mkfs.vfat', '-F', '16', bootpartition_name)
+            command('mkfs.ext4', rootpartition_name)
 
-            # mount filesystem, fill it with files, and unmount it
-            os.makedirs(tmppath('mountpoint'), exist_ok=True)
-            command('mount', bootpartition_name, tmppath('mountpoint'))
+            # mount boot filesystem, fill it with files, and unmount it
+            os.makedirs(tmppath('mntboot'), exist_ok=True)
+            command('mount', bootpartition_name, tmppath('mntboot'))
             setup_exit_stack.callback(
-                lambda: command('umount', tmppath('mountpoint')))
+                lambda: command('umount', tmppath('mntboot')))
 
-            command('cp', args.kernel, tmppath('mountpoint') + '/kernel')
-            command('cp', args.initrd, tmppath('mountpoint') + '/initrd')
+            # mount root filesystem, so we can simulate a root-switch
+            os.makedirs(tmppath('mntroot'), exist_ok=True)
+            command('mount', rootpartition_name, tmppath('mntroot'))
+            setup_exit_stack.callback(
+                lambda: command('umount', tmppath('mntroot')))
 
-            with open(tmppath('mountpoint') + '/stiefelsystem.json', 'w') as fileobj:
-                json.dump({"kernel": "kernel", "initrd": "initrd"}, fileobj)
+            # this is the to-be-stiefeled kernel and initrd,
+            # which will be provided to the stiefel-client.
+            command('cp', args.kernel, tmppath('mntboot') + '/kernel')
+            command('cp', args.initrd, tmppath('mntboot') + '/initrd')
+
+            with open(tmppath('mntboot') + '/stiefelsystem.json', 'w') as fileobj:
+                # cmdline options served by stiefel-server
+                # to the booting client
+                stiefel_cmdline = [
+                    "verbose",
+                ]
+
+                # TODO: actually should be 'initrd-dracut'
+                if 'system-gentoo' in cfg.modules:
+                    stiefel_cmdline.extend([
+                        "rd.info",
+                        "rd.shell",
+                        "rd.retry=15",
+                    ])
+                    if bootpart_luks_uuid:
+                        stiefel_cmdline.append(f"rd.luks.uuid={bootpart_luks_uuid}")
+                elif bootpart_luks_uuid:
+                    raise NotImplementedError("luks unlocking not implemented for non-dracut initrd")
+
+                json.dump({
+                    "kernel": "kernel",
+                    "initrd": "initrd",
+                    "cmdline": stiefel_cmdline,
+                    "stiefelmodules": list(cfg.modules.keys()),
+                }, fileobj)
+
+            # dummy root filesystem
+            command('mkdir', *[f"{tmppath('mntroot')}/{dirname}" for dirname in
+                               ('etc', 'sbin', 'bin', 'sys', 'dev', 'proc', 'run', 'tmp', 'lib')])
+            command('tee', tmppath('mntroot') + '/etc/os-release',
+                    stdin='NAME=Stiefelsystem\nID=sftstiefel\nPRETTY_NAME="SFT Stiefelsystem"\n')
+            command('tee', tmppath('mntroot') + '/etc/fstab',
+                    stdin='# lol nope\n')
+
+            install_binary(tmppath('mntroot'), '/bin/sh')
+            command('tee', tmppath('mntroot') + '/sbin/init',
+                    stdin=("#!/bin/sh\n"
+                           "echo 'sft technologies is proud to announce:'\n"
+                           "echo 'your system is now booted!'\n"
+                           "echo 'it should now work with your real system.'\n"
+                           "echo 'if not, sft technologies is sorry for you.'\n"
+                           "exec /bin/sh\n"
+                           ""))
+            command('chmod', '+x', tmppath('mntroot') + '/sbin/init')
 
         # setup the bridge that allows connection to the client VM
         command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
@@ -154,26 +250,33 @@ with contextlib.ExitStack() as exit_stack:
         command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
         exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
 
-        # because inside qemu the loop-device is called vda
+        # because inside qemu the loop-device is called sda
         if bootpartition_name == loop_device_name + 'p1':
-            bootpartition_name = "/dev/vda1"
+            bootpartition_name = "/dev/sda1"
 
         if bootpart_luks == loop_device_name + 'p1':
-            bootpart_luks = "/dev/vda1"
+            bootpart_luks = "/dev/sda1"
 
         cmdline = [
-            "systemd.unit=stiefel-server.service",
-            "stiefel_bootdisk=/dev/vda",
+            "stiefel_bootdisk=/dev/sda",
             f"stiefel_bootpart={bootpartition_name}",
         ]
+        cmdline.append("systemd.unit=stiefel-server.service")
 
-        if cfg.boot.luks_block is not None:
+        if cfg.boot.luks_block is None:
+            # TODO: stiefel-server requires a password entry from cryptsetup
+            # thus we need to launch it manually...
+            pass
+
+        else:
             cmdline.append(
                 f'stiefel_bootpart_luks={bootpart_luks}'
             )
 
         qemu_args = [
-            "-drive", f"file={tmppath('disk_image')},format=raw,if=virtio"
+            "-drive", f"file={tmppath('disk_image')},format=raw,if=none,id=systemhdd",
+            "-device", "virtio-scsi-pci,id=scsi0",
+            "-device", "scsi-hd,drive=systemhdd,bus=scsi0.0",
         ]
 
     elif args.mode == 'test':
@@ -213,15 +316,6 @@ with contextlib.ExitStack() as exit_stack:
             "-device", f"usb-host,vendorid=0x{vid},productid=0x{did}"
         ])
 
-    if not args.graphical:
-        cmdline.insert(0, "console=ttyS0")
-        qemu_args.append("-nographic")
-
-        print("quit qemu with C-A X")
-        if not args.skip_confirm and not args.graphical:
-            print("press ENTER to enter simulation")
-            input()
-
     if args.extra_files is not None:
         # pack the extra files into an CPIO archive
         extra_cpio = command(
@@ -237,14 +331,35 @@ with contextlib.ExitStack() as exit_stack:
                 initrd_wfile.write(initrd_rfile.read())
                 initrd_wfile.write(extra_cpio)
 
+    if args.serialnetwork:
+        qemu_args.extend([
+            "-serial",
+            "telnet:localhost:4321,server,wait"
+        ])
+
+    if not args.graphical:
+        cmdline.insert(0, "console=ttyS0")
+        qemu_args.append("-nographic")
+        confirm = not (args.serialnetwork or args.skip_confirm)
+
+        print("remember: quit qemu with C-a x")
+    else:
+        qemu_args.extend([
+            "-vga", "virtio",
+        ])
+        cmdline.append("vga=795")
+        confirm = False
+
     command(
         "qemu-system-x86_64",
         "-machine", "q35,accel=kvm",
-        "-m", "10240",
-        "-kernel", args.kernel,
-        "-initrd", args.initrd,
+        "-cpu", "host",
+        "-m", str(3 * 1024),
+        "-kernel", args.srv_kernel,
+        "-initrd", args.srv_initrd,
         "-netdev", f"tap,id=network0,script={tmppath('ifup-script')},downscript=no",
         "-device", f"virtio-net,netdev=network0,mac={mac}",
         "-append", " ".join(cmdline),
-        *qemu_args
+        *qemu_args,
+        confirm=confirm,
     )

@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 import re
+import shutil
 import socket
 import subprocess
 import struct
@@ -116,6 +117,7 @@ with open("/etc/nbd-server/config", "w") as nbdconfigfile:
 print(f"opening NBD server for {BLKDEV}")
 subprocess.check_call(['systemctl', 'start', 'nbd-server'])
 
+
 def read_binary(filename):
     if not os.path.isfile(filename):
         return None
@@ -123,44 +125,81 @@ def read_binary(filename):
         return fileobj.read()
 
 
-def find_kernel_and_initrd():
+def find_boot_config():
+    print('trying to find boot config')
+
     # kernel hints were manually created for the stiefelsystem
     stiefelsystem_config = read_binary("/mnt/stiefelsystem.json")
+
+    ret = {
+        'kernel': None,
+        'initrd': None,
+        'cmdline': None,
+        'stiefelmodules': None,
+    }
+
     if stiefelsystem_config is not None:
         stiefelsystem_config_json = json.loads(stiefelsystem_config)
-        yield os.path.normpath(
-            b'/mnt/' + stiefelsystem_config_json['kernel'].encode('utf-8')
-        )
-        yield os.path.normpath(
-            b'/mnt/' + stiefelsystem_config_json['initrd'].encode('utf-8')
-        )
-        return
+        ret['cmdline'] = " ".join(stiefelsystem_config_json['cmdline']).encode('utf-8')
+        ret['stiefelmodules'] = " ".join(stiefelsystem_config_json['stiefelmodules']).encode('utf-8')
 
-    # try to determine kernel from syslinux config
-    syslinux_config = read_binary("/mnt/syslinux/syslinux.cfg")
-    if syslinux_config is not None:
-        yield os.path.normpath(os.path.join(
-            b'/mnt/syslinux',
-            re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
-        ))
-        yield os.path.normpath(os.path.join(
-            b'/mnt/syslinux',
-            re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
-        ))
-        return
+        kerneldef = stiefelsystem_config_json.get('kernel')
+        if kerneldef:
+            ret['kernel'] = os.path.normpath(
+                b'/mnt/' + kerneldef.encode('utf-8')
+            )
 
-    # try to determine kernel from grub config
-    grub_config = read_binary("/mnt/grub/grub.cfg")
-    if grub_config is not None:
-        yield os.path.normpath(
-            b'/mnt/' +
-            re.search(rb'^\s*linux\s+(\S+)\s', grub_config, re.M).group(1)
-        )
-        yield os.path.normpath(
-            b'/mnt/' +
-            re.search(rb'^\s*initrd\s+(\S+)\s', grub_config, re.M).group(1)
-        )
-        return
+        initrddef = stiefelsystem_config_json.get('initrd')
+        if initrddef:
+            ret['initrd'] = os.path.normpath(
+                b'/mnt/' + stiefelsystem_config_json['initrd'].encode('utf-8')
+            )
+
+    # we're missing kernel invocation options, try to parse the bootloader config
+    if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
+        # try to determine kernel from syslinux config
+        syslinux_config = read_binary("/mnt/syslinux/syslinux.cfg")
+        if syslinux_config is not None:
+            ret['kernel'] = os.path.normpath(os.path.join(
+                b'/mnt/syslinux',
+                re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
+            ))
+            ret['initrd'] = os.path.normpath(os.path.join(
+                b'/mnt/syslinux',
+                re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
+            ))
+            # TODO: cmdline parsing for syslinux cfg
+
+    if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
+        # try to determine kernel from grub config
+        grub_config = read_binary("/mnt/grub/grub.cfg")
+        if grub_config is not None:
+            kernelcmd = re.search(rb'^\s*linux\s+(\S+)((?:\s(?:\S+))*)\s*$', grub_config, re.M)
+            if not kernelcmd:
+                raise Exception('could not find kernel invocation in grub cfg')
+
+            initrdcmd = re.search(rb'^\s*initrd\s+(\S+)\s', grub_config, re.M)
+            if not initrdcmd:
+                raise Exception('could not find initrd definition in grub cfg')
+
+            ret['kernel'] = os.path.normpath(
+                b'/mnt/' +
+                kernelcmd.group(1)
+            )
+            ret['initrd'] = os.path.normpath(
+                b'/mnt/' +
+                initrdcmd.group(1)
+            )
+            ret['cmdline'] = os.path.normpath(
+                b'/mnt/' +
+                kernelcmd.group(2)
+            )
+
+    for k, v in ret.items():
+        if not v:
+            raise Exception(f'no configuration found for {k!r}')
+
+    return ret
 
 
 def get_boot_tar(challenge):
@@ -169,24 +208,53 @@ def get_boot_tar(challenge):
     if BOOTPART_LUKS:
         # open luks device to fetch kernel and initrd from it
         print("opening luks-crypted device...")
-        mapped_name = 'stiefelboot'
-        while os.path.exists(f"/dev/mapper/{mapped_name}"):
-            mapped_name += '_'
+        decrypt_mapped = 'stiefelboot'
+        while os.path.exists(f"/dev/mapper/{decrypt_mapped}"):
+            decrypt_mapped += '_'
 
-        subprocess.check_call(['cryptsetup', 'open', '--type=luks',
-                               BOOTPART_LUKS, mapped_name])
+        # TODO: ideally, the password should be provided by stiefel-client here.
+        luks_phrase = subprocess.check_output(
+            ['systemd-ask-password',
+             'stiefelsystem root block device luks password']
+        ).strip()
+
+        subprocess.run(['cryptsetup', 'open', '--type=luks',
+                        '--key-file=-',
+                        BOOTPART_LUKS, decrypt_mapped],
+                       input=luks_phrase,
+                       check=True)
+
+        # force-discover the new pvs and lvs
+        if shutil.which('lvm'):
+            subprocess.check_call(['pvscan'])
+            subprocess.check_call(['lvscan'])
+            subprocess.check_call(['udevadm', 'settle',
+                                   f'--exit-if-exists={BOOTPART}'])
+
     try:
         subprocess.check_call(['mount', '-oro', BOOTPART, '/mnt'])
-        kernel, initrd = find_kernel_and_initrd()
-        print(f"kernel: {kernel.decode(errors='replace')!r}")
-        kernelblob = read_binary(kernel)
-        print(f"initrd: {initrd.decode(errors='replace')!r}")
-        initrdblob = read_binary(initrd)
+        bootcfg = find_boot_config()
+
+        print(f"kernel: {bootcfg['kernel'].decode(errors='replace')!r}")
+        kernelblob = read_binary(bootcfg['kernel'])
+        print(f"initrd: {bootcfg['initrd'].decode(errors='replace')!r}")
+        initrdblob = read_binary(bootcfg['initrd'])
+
     finally:
         subprocess.check_call(['umount', '/mnt'])
 
     if BOOTPART_LUKS:
-        subprocess.check_call(['cryptsetup', 'close', mapped_name])
+        if shutil.which('lvm'):
+            # deactivate all lvm child blockdevices
+            blocktree = json.loads(subprocess.check_output(
+                ['lsblk', '--json', f'/dev/mapper/{decrypt_mapped}']).decode())
+
+            for block in blocktree['blockdevices'][0]['children']:
+                if block['type'] == 'lvm':
+                    subprocess.check_call(
+                        ['lvchange', '-an', f"/dev/mapper/{block['name']}"])
+
+        subprocess.check_call(['cryptsetup', 'close', decrypt_mapped])
 
     # create the response TAR in-memory
     with io.BytesIO() as fileobj:
@@ -194,14 +262,28 @@ def get_boot_tar(challenge):
             tf = tarfile.TarInfo('kernel')
             tf.size = len(kernelblob)
             tar.addfile(tf, io.BytesIO(kernelblob))
+
             tf = tarfile.TarInfo('initrd')
             tf.size = len(initrdblob)
             tar.addfile(tf, io.BytesIO(initrdblob))
+
             tf = tarfile.TarInfo('challenge')
             tf.size = len(challenge)
             tar.addfile(tf, io.BytesIO(challenge))
+
+            cmdline = bootcfg['cmdline']
+            tf = tarfile.TarInfo('cmdline')
+            tf.size = len(cmdline)
+            tar.addfile(tf, io.BytesIO(cmdline))
+
+            stiefelmodulelist = bootcfg['stiefelmodules']
+            tf = tarfile.TarInfo('stiefelmodules')
+            tf.size = len(stiefelmodulelist)
+            tar.addfile(tf, io.BytesIO(stiefelmodulelist))
+
         fileobj.seek(0)
         return fileobj.read()
+
 
 # run HTTP server
 def handle_request(path):
@@ -240,6 +322,7 @@ def handle_request(path):
     else:
         return 404, f"404: {path}"
 
+
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         try:
@@ -264,8 +347,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
         self.wfile.write(message)
 
+
 class HTTPServerIPv6(http.server.HTTPServer):
     address_family = socket.AF_INET6
+
 
 print("running HTTP server")
 

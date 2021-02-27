@@ -4,8 +4,10 @@ Utilities for use by the various scripts.
 import io
 import multiprocessing
 import os
+import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import tarfile
 import traceback
@@ -486,3 +488,68 @@ def download_tar(url, target_dir, timeout=20):
             raise RuntimeError("unsupported entry type")
 
     return prefix
+
+
+def install_binary(rootpath, binarypath):
+    """
+    install the given binary into the rootpath
+    under /bin/binaryname,
+    including all dependent libraries
+    """
+
+    if not isinstance(rootpath, pathlib.Path):
+        rootpath = pathlib.Path(rootpath)
+
+    copy_symlink_chain(rootpath, binarypath)
+    deps = command('ldd', binarypath, capture_stdout=True).decode()
+
+    for dep in deps.split("\n"):
+        dep = dep.strip()
+        if not dep:
+            continue
+
+        if dep.startswith("linux-vdso.so"):
+            # no need to store the vdso :)
+            continue
+
+        if '=>' in dep:
+            # '\tlibreadline.so.8 => /lib64/libreadline.so.8 (0x00007f83fa5ab000)\n'
+            dep_path = dep.split("=>")[1].split()[0]
+        else:
+            dep_path = dep.split()[0]
+
+        copy_symlink_chain(rootpath, dep_path)
+
+
+def copy_symlink_chain(rootpath, file_path):
+    """
+    copy a file from the current root to the given new rootpath.
+    copy all symlinks on the way until we reach a real file.
+    """
+
+    file_path = pathlib.Path(file_path)
+    file_path_dest = rootpath / file_path.relative_to('/')
+
+    while True:
+        if not (file_path.exists() or file_path.is_symlink()):
+            raise FileNotFoundError(str(file_path))
+
+        if file_path_dest.exists() or file_path_dest.is_symlink():
+            file_path_dest.unlink()
+
+        file_path_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(file_path, file_path_dest, follow_symlinks=False)
+
+        if file_path.is_symlink():
+            # if is symlink, try again with its destination
+            file_path_ln = file_path.parent / pathlib.Path(os.readlink(file_path))
+            file_path_dest = rootpath / file_path_ln.relative_to('/')
+            file_path = file_path_ln
+
+        elif file_path.exists():
+            # real file, so we're done
+            break
+
+        else:
+            raise Exception(f"wtf {file_path} no symlink and doesn't exist")
+            # else, copy the file and that's it
