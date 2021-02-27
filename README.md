@@ -42,6 +42,36 @@ Authentication, encryption and MITM protection happens through a shared symmetri
 Your nbd connection itself is unencrypted and unauthenticated, so I strongly recommend a
 point-to-point connection and not enabling IP forwarding.
 
+```
+time
+|
+|
+| laptop computer                           desktop computer
+| regular OS                            boot from usb stick or PXE
+|    |                                            |
+| autokexec service                               |
+v    |              discovery message             |
+     |<---------------------<---------------------+
+     |                                            |
+  reboot to stiefel-server system (kexec)         |
+     |                                            |
+     |            request kernel + initrd         |
+     |<---------------------<---------------------+
+     |                                            |
+     |            send kernel + initrd            |
+     +---------------------->-------------------->|
+     |                                    kexec to received kernel
+     |                               and network-root compatible initramfs
+  serve root block device                         |
+     |             map/mount root fs              |
+     |<---------------------<---------------------+
+     |                                            |
+     |                                    switch root and enjoy!
+     |               rootfs requests              |
+     |<---------------------<---------------------+
+     v                                            v
+```
+
 # How to?
 
 You need to
