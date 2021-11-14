@@ -1,5 +1,5 @@
 [Unit]
-Description=Auto-reboot into Stiefelsystem server on Adapter detection
+Description=Auto-reboot into Stiefelsystem server on discovery message
 
 [Service]
 Type=simple

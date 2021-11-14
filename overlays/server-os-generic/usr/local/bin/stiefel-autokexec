@@ -15,7 +15,7 @@ if os.path.exists('/sys/class/net/stiefellink'):
           'stiefeled system')
     raise SystemExit(0)
 
-with open('/etc/stiefelsystem-config.json') as cfg_fileobj:
+with open('/etc/stiefelsystem/config.json') as cfg_fileobj:
     config = json.load(cfg_fileobj)
 
 def command(*cmd):
@@ -30,11 +30,20 @@ def do_kexec():
         f'stiefel_bootdisk={config["bootdisk"]}',
         f'stiefel_bootpart={config["bootpart"]}',
     ]
+    cmdline.extend(config.get("cmdline", []))
+
+    bootpart_luks = config.get("bootpart-luks")
+    if bootpart_luks is not None:
+        cmdline.append(
+            f'stiefel_bootpart_luks={bootpart_luks}'
+        )
 
     command(
         'kexec',
         config['stiefelsystem-kernel'],
         '--ramdisk=' + config['stiefelsystem-initrd'],
+        '--reset-vga',
+        '--console-vga',
         '--command-line=' + ' '.join(cmdline)
     )
 

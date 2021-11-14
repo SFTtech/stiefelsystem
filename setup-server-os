@@ -46,23 +46,32 @@ if 'base' in cfg.modules:
             "adapters": cfg.autokexec.macs,
         },
         "bootdisk": cfg.boot.disk,
+        "bootpart-luks": cfg.boot.luks_block,
         "bootpart": cfg.boot.part,
         "stiefelsystem-kernel": cfg.server_setup.stiefelsystem_kernel,
         "stiefelsystem-initrd": cfg.server_setup.stiefelsystem_initrd,
+        "cmdline": cfg.server_setup.cmdline,
     }
-    edit = FileEditor('/etc/stiefelsystem-config.json')
+    # TODO: rename to autokexec config
+    edit = FileEditor('/etc/stiefelsystem/config.json')
     edit.set_data(json.dumps(stiefel_config, indent=4).encode() + b'\n')
     edit.write()
 
+    # copy the special stiefelsystem initrd to its final location
+    # it will be used for autokexec on the server
     edit = FileEditor(cfg.server_setup.stiefelsystem_initrd)
     edit.load_from(os.path.join(cfg.path.work, 'initrd.cpio'))
     edit.write()
 
+    # same for the debian-generic-kernel
     edit = FileEditor(cfg.server_setup.stiefelsystem_kernel)
     edit.load_from(os.path.join(cfg.path.initrd, 'vmlinuz'))
     edit.write()
 
 if 'system-arch' in cfg.modules:
+    # create a new 'stiefel' mkinitcpio-preset
+    # which will generate a regular arch-initrd
+    # with stiefel-client mounting support
     edit = FileEditor('/etc/mkinitcpio-stiefel.conf')
     edit.load_from('/etc/mkinitcpio.conf')
     changes = {'`which ifrename`': 'at-end'}
@@ -84,9 +93,12 @@ if 'system-arch' in cfg.modules:
     edit.add_or_edit_var('stiefel_options', '-c /etc/mkinitcpio-stiefel.conf -S autodetect')
     edit.write()
 
+    # what kernel and initrd is then transferred and kexecd on the stiefel-client
     boot_config = {
         "kernel": "vmlinuz-linux",
         "initrd": "initramfs-stiefel.img",
+        # TODO: cmdline config option is required now!
+        "stiefelmodules": list(cfg.modules.keys()),
     }
     edit = FileEditor('/boot/stiefelsystem.json')
     edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
@@ -97,7 +109,26 @@ if 'system-arch' in cfg.modules:
 
     command('mkinitcpio', '-p', 'linux')
 
-if 'system-debian' in cfg.modules:
+elif 'system-debian' in cfg.modules:
     if 'nbd' in cfg.modules:
         install_folder('overlays/server-os-debian')
         command('update-initramfs', '-u', '-k', 'all')
+
+elif 'system-gentoo' in cfg.modules:
+    # tell stiefel-server which kernel to serve to a stiefel-client,
+    # relative to /boot
+    boot_config = {
+        "kernel": cfg.boot.kernel,
+        "initrd": cfg.boot.initrd,
+        "cmdline": cfg.boot.cmdline,
+        "stiefelmodules": list(cfg.modules.keys()),
+    }
+    edit = FileEditor('/boot/stiefelsystem.json')
+    edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
+    edit.write()
+
+    if 'nbd' in cfg.modules:
+        install_folder('overlays/server-os-dracut-nbd')
+
+else:
+    raise Exception("no system-specific distro config module is enabled")
