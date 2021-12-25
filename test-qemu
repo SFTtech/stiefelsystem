@@ -354,7 +354,7 @@ with contextlib.ExitStack() as exit_stack:
         "qemu-system-x86_64",
         "-machine", "q35,accel=kvm",
         "-cpu", "host",
-        "-m", str(3 * 1024),
+        "-m", str(3 * 1024 if args.mode == "server" else 5 * 1024),
         "-kernel", args.srv_kernel,
         "-initrd", args.srv_initrd,
         "-netdev", f"tap,id=network0,script={tmppath('ifup-script')},downscript=no",
