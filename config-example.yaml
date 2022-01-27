@@ -1,29 +1,31 @@
 # list of modules that shall be used during image creation.
 # see module-configs below to configure the modules (if applicable)
 modules:
-    # necessary base components. just try disabling this and see what happens.
+    # debug mode: the initrds will be much larger and much more usable
+    - debug
+    # never disable those core components:
     - base
-    # support for arch linux payload systems
-    # takes care of mkinitcpio integration
-    - system-arch
+    - nbd
+    ###########################################################################
+    # select one of the following systems:
+    # support for arch linux payload systems (mkinitcpio)
+    #- system-arch
     # support for debian linux payload systems
     #- system-debian
-    # support for gentoo payload systems
+    # support for gentoo+dracut payload systems
     #- system-gentoo
-    # support for r8152-family realtek USB ethernet controllers
-    - r8152
-    # support for clevo notebook fan control
-    - clevo-fancontrol
-    # stiefel through the nbd protocol
-    - nbd
+    ###########################################################################
+    # optional components
     # your /boot or / device is on lvm
     - lvm
-    # debug mode: the initrds will be much larger and much more usable
-    #- debug
+    # support for r8152-family realtek USB ethernet controllers
+    #- r8152
+    # support for clevo notebook fan control
+    #- clevo-fancontrol
 
 boot:
     # the disk that is shared by the server
-    disk: /dev/disk/by-id/ata-Samsung_SSD_860_EVO_1TB_S3Z9NB0K119516H
+    disk: /dev/disk/by-id/ata-SOME_RANDOM_DRIVE
     # the boot partition where the server gets the kernel and initrd
     part:
         # directly accessible boot partition block device
@@ -35,19 +37,21 @@ boot:
         #luks_block: /dev/disk/by-uuid/e9aaxe22-8a07-4d0d-8c5f-b2b55ddc7cbb
         #block: /dev/lollvmvg/boot
     # the cmdline that will be given to the stiefeled system
-    cmdline:
-        - root=PARTUUID=fdb19589-ad52-4228-996a-50fb34854d2c
-        - rw
-        - consoleblank=0
+    load:
+        kernel: /boot/vmlinuz-linux
+        initrd: /boot/initramfs-linux.img
+        # cmdline that will be given to the stiefeled system
+        cmdline:
+            - root=UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+            - rw
+            - consoleblank=0
 
 # settings for automatic reboot of the laptop into stiefel-server
 autokexec:
     # when an adapter with one of these mac addresses is connected,
     # the reboot occurs
     macs:
-        - a0:ce:c8:cc:57:47
-        - a0:ce:c8:cc:57:c9
-        - 00:e0:4c:68:00:96
+        - 11:11:11:11:11:11
 
 server-setup:
     # how to setup the system that boots the stiefelsystem server

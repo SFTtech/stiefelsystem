@@ -74,26 +74,42 @@ v    |              discovery message             |
 
 # How to?
 
-You need to
+## Dependencies
 
-- think of your configuration (in `config.yaml`)
-- create the stiefelsystem ramdisk (for use by server and client)
-- setup the stiefel-autokexec service on the laptop (and provide it with the ramdisk and config)
-- setup the nbd hook on your OS
-- create the USB boot flash drive (and provide it with the ramdisk and config)
+* [Arch Linux](doc/arch.md)
+* [Debian](doc/debian.md)
+* [Gentoo](doc/gentoo.md)
+
+
+## Setup
+
+Basic steps (commands below):
+
+- You create a Debian-based OS image which is booted on client and server
+- This image is flashed on an USB drive, which is used to boot the client
+- The same system is kexec'd on your server to serve the root disk
+
 
 The scripts in this repo automate all of those task (apart from the thinking...)
 
-- `cp config-example.yaml config.yaml` and edit it to your wishes. Select the modules that are appropriate for your system.
-- `sudo ./create-initrd` prepares the debian-based initrd, as a folder and as an archive
-- you can check out the initrd with `sudo ./test-nspawn`
-- you can check out server and client interactions with `sudo ./test-qemu server` and `sudo ./test-qemu client`
-- `sudo ./setup-server-os` sets up your system, asking for permission for every operation. It sets up:
-  - the stiefel-autokexec service
-  - an initrd that can mount your root disk from the network
-  - a network manager rule to disable control of the stiefellink
-- `sudo ./setup-client-usbdrive` creates the usb drive
-- `rm aes-key` to reset the AES key (newly created ramdisks won't work with older ones)
+- Make shure you have all dependencies installed
+  * `cp config-example.yaml config.yaml` and edit it to your wishes.
+  * Select the modules that are appropriate for your system.
+- create the stiefelsystem ramdisk (for use by server and client)
+  * `sudo ./create-initrd` prepares the debian-based initrd, as a folder and as an archive
+  * You can check out the initrd with `sudo ./test-nspawn`
+  * You can check out server and client interactions with `sudo ./test-qemu server` and `sudo ./test-qemu client`
+
+- Setup the `stiefel-autokexec` service on the laptop (and provide it with the ramdisk and config) and setup the nbd rootfs hook in your initfs on your OS
+  * `sudo ./setup-server-os` sets up your system, asking for permission for every operation. It sets up:
+    * The `stiefel-autokexec.service`
+    * Initrd hooks that can mount your root disk from the network
+    * A network manager rule to disable control of the network partition network device
+- Create a USB boot drive
+  * `sudo ./setup-client-usbdrive /dev/sdxxx` creates the usb drive
+
+- To reset the AES key, run `rm aes-key` (newly created ramdisks won't work with older ones)
+
 
 # Why don't you use X in the tech stack?
 
@@ -106,9 +122,9 @@ I tried X and it sucks.
 
 # Why don't you use Y in the tech stack?
 
-I'd really like to use Y, but you haven't implemented support yet.
+We'd really like to use Y, but you haven't implemented support yet.
 
-# TODO
+# Things to improve
 
 ## Creation scripts
 

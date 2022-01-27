@@ -1,11 +1,16 @@
-# Setup #
+# Debian
 
-packets to install: nbd-client syslinux ifrename python3-pyudev kexec-tools libarchive-tools debootstrap syslinux-utils
+## Dependencies
 
-for debugging: systemd-container qemu qemu-system-x86 
+```
+apt install debootstrap ifrename kexec-tools libarchive-tools nbd-client python3-pyudev syslinux syslinux-utils
+```
 
-## Config ##
-activate system-debian in config.yaml and deactivate all other system-*
+For debugging:
+```
+apt install systemd-container qemu qemu-system-x86
+```
 
+## Config
 
-
+Enable the `system-debian` module!
