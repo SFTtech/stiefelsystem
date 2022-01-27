@@ -48,10 +48,14 @@ boot:
 
 # settings for automatic reboot of the laptop into stiefel-server
 autokexec:
-    # when an adapter with one of these mac addresses is connected,
-    # the reboot occurs
+    # you probably don't need this!
+    # modern stiefelsystem has network discovery messages!
+    #
+    # if you want to reboot your system when one of these macs is
+    # detected, enter the macs that should trigger here.
+    # otherwise, use a valid but nonexisting mac.
     macs:
-        - 11:11:11:11:11:11
+        - "11:11:11:11:11:11"
 
 server-setup:
     # how to setup the system that boots the stiefelsystem server
