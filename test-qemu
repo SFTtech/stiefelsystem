@@ -58,6 +58,15 @@ with contextlib.ExitStack() as exit_stack:
         return os.path.join(tmpdir, name)
 
     if args.mode == 'client':
+        # check if our test might reboot the actual device...
+        autokexec_active = command("systemctl", "is-active", "stiefel-autokexec.service",
+                                   get_retval=True)
+        if autokexec_active == 0:
+            print("stiefel-autokexec.service is active on your computer")
+            print("this test would thus reboot your device during testing!")
+            print("-> please run:\nsystemctl stop stiefel-autokexec.service")
+            exit(1)
+
         # client mode only works when a server is already running
         mac = "52:54:00:5f:70:02"
 
