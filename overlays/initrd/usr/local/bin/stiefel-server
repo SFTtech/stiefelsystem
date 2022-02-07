@@ -14,6 +14,7 @@ import struct
 import tarfile
 import time
 import traceback
+import urllib
 
 import Cryptodome.Cipher.AES
 
@@ -38,6 +39,33 @@ print(f"config: {cmdlineargs}")
 with open("/aes-key", "rb") as keyfile:
     KEY = keyfile.read()
 KEY_HASH = hashlib.sha256(KEY).hexdigest().encode()
+
+
+# TODO: make common code for stiefel-client&server
+def encrypt(plaintext):
+    nonce_gen = hashlib.sha256(plaintext)  # recommended by djb lol
+    nonce_gen.update(os.urandom(16))
+    nonce = nonce_gen.digest()[:16]
+    cipher = Cryptodome.Cipher.AES.new(
+        KEY,
+        Cryptodome.Cipher.AES.MODE_EAX,
+        nonce=nonce,
+        mac_len=16
+    )
+    ciphertext, mac = cipher.encrypt_and_digest(plaintext)
+    if len(mac) != 16:
+        raise ValueError('bad MAC length')
+    return nonce + ciphertext + mac
+
+
+def decrypt(blob):
+    nonce = blob[:16]
+    ciphertext = blob[16:-16]
+    mac = blob[-16:]
+    cipher = Cryptodome.Cipher.AES.new(KEY, Cryptodome.Cipher.AES.MODE_EAX, nonce=nonce, mac_len=16)
+    decrypted_blob = cipher.decrypt_and_verify(ciphertext, mac)
+    del nonce, ciphertext, mac
+    return decrypted_blob
 
 
 def discovery_server():
@@ -202,8 +230,10 @@ def find_boot_config():
     return ret
 
 
-def get_boot_tar(challenge):
+def get_boot_tar(queryargs):
     print("reading kernel and initrd")
+
+    challenge = queryargs['challenge'][0].encode('utf-8')
 
     if BOOTPART_LUKS:
         # open luks device to fetch kernel and initrd from it
@@ -212,17 +242,15 @@ def get_boot_tar(challenge):
         while os.path.exists(f"/dev/mapper/{decrypt_mapped}"):
             decrypt_mapped += '_'
 
-        # TODO: ideally, the password should be provided by stiefel-client here.
-        luks_phrase = subprocess.check_output(
-            ['systemd-ask-password',
-             'stiefelsystem root block device luks password']
-        ).strip()
+        luks_pw_enc = base64.b64decode(queryargs['lukspw'][0])
+        luks_phrase = decrypt(luks_pw_enc)
 
         subprocess.run(['cryptsetup', 'open', '--type=luks',
                         '--key-file=-',
                         BOOTPART_LUKS, decrypt_mapped],
                        input=luks_phrase,
                        check=True)
+        del luks_phrase
 
         # force-discover the new pvs and lvs
         if shutil.which('lvm'):
@@ -267,6 +295,7 @@ def get_boot_tar(challenge):
             tf.size = len(initrdblob)
             tar.addfile(tf, io.BytesIO(initrdblob))
 
+            # unique content so a client can detect replay attacks
             tf = tarfile.TarInfo('challenge')
             tf.size = len(challenge)
             tar.addfile(tf, io.BytesIO(challenge))
@@ -286,39 +315,39 @@ def get_boot_tar(challenge):
 
 
 # run HTTP server
-def handle_request(path):
+def handle_request(query_path):
+
+    query_split = urllib.parse.urlsplit(query_path)
+    path = query_split.path
+    queryargs = urllib.parse.parse_qs(query_split.query)
+
     if path == '/':
         return 200, json.dumps({
             "what": "stiefelsystem-server",
             "args": cmdlineargs,
             "key-hash": KEY_HASH.decode(),
             "challenge": CHALLENGE,
+            "need-luks": bool(BOOTPART_LUKS),
         }) + '\n'
+
     elif path == '/boot.tar':
         if UNSECURE:
-            return 200, get_boot_tar(b'')
+            return 200, get_boot_tar({'challenge': ""})
         else:
             return 403, "only boot.tar.aes is available"
-    elif path.startswith('/boot.tar.aes?challenge='):
+
+    elif path.startswith('/boot.tar.aes'):
+
         # the client shall supply a random challenge to prevent replay
         # attacks that would cause the boot of an older kernel/initrd.
-        plaintext = get_boot_tar(challenge=path.encode('utf-8'))
-        nonce_gen = hashlib.sha256(plaintext)  # recommended by djb lol
-        nonce_gen.update(os.urandom(16))
-        nonce = nonce_gen.digest()[:16]
-        cipher = Cryptodome.Cipher.AES.new(
-            KEY,
-            Cryptodome.Cipher.AES.MODE_EAX,
-            nonce=nonce,
-            mac_len=16
-        )
+        plaintext = get_boot_tar(queryargs)
+
         print('encrypting boot.tar.aes')
-        ciphertext, mac = cipher.encrypt_and_digest(plaintext)
+        encrypted_blob = encrypt(plaintext)
         print('encryption done')
-        if len(mac) != 16:
-            raise ValueError('bad MAC length')
         del plaintext
-        return 200, nonce + ciphertext + mac
+
+        return 200, encrypted_blob
     else:
         return 404, f"404: {path}"
 

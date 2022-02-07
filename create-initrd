@@ -17,11 +17,11 @@ ensure_root()
 
 cli = argparse.ArgumentParser()
 cli.add_argument('--debian-mirror', default='http://mirror.stusta.de/debian/')
-cli.add_argument('--out', default=cfg.path.cpio)
+cli.add_argument('--out', default=cfg.path.cpio, help="output cpio file (%(default)s)")
 cli.add_argument('--compressor', default=cfg.packing.compressor)
 cli.add_argument('--skip-setup', action='store_true')
 cli.add_argument('--tmp-work', action='store_true',
-                 help='use a tmpfs for workk and cachedir')
+                 help='use a tmpfs for work and cachedir')
 args = cli.parse_args()
 
 if not args.skip_setup:

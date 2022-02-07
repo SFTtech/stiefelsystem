@@ -19,6 +19,7 @@ print(f"reading config from kernel cmdline")
 
 with open('/proc/cmdline') as cmdlinefile:
     cmdline = cmdlinefile.read()
+
 cmdlineargs = {}
 for entry in cmdline.strip().split():
     try:
@@ -39,6 +40,37 @@ DISCOVERY_PORT = 61570
 NAMEINFO_FLAGS = socket.NI_NUMERICHOST
 sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
 SERVER = None
+SERVER_INTERFACE = None
+NEED_LUKS = None
+
+
+# TODO: make common code for stiefel-client&server
+def encrypt(plaintext):
+    nonce_gen = hashlib.sha256(plaintext)  # recommended by djb lol
+    nonce_gen.update(os.urandom(16))
+    nonce = nonce_gen.digest()[:16]
+    cipher = Cryptodome.Cipher.AES.new(
+        KEY,
+        Cryptodome.Cipher.AES.MODE_EAX,
+        nonce=nonce,
+        mac_len=16
+    )
+    ciphertext, mac = cipher.encrypt_and_digest(plaintext)
+    if len(mac) != 16:
+        raise ValueError('bad MAC length')
+    return nonce + ciphertext + mac
+
+
+def decrypt(blob):
+    nonce = blob[:16]
+    ciphertext = blob[16:-16]
+    mac = blob[-16:]
+    cipher = Cryptodome.Cipher.AES.new(KEY, Cryptodome.Cipher.AES.MODE_EAX, nonce=nonce, mac_len=16)
+    decrypted_blob = cipher.decrypt_and_verify(ciphertext, mac)
+    del nonce, ciphertext, mac
+    return decrypted_blob
+
+
 while SERVER is None:
     # set interfaces up and send discovery messages
     for netdev in os.listdir('/sys/class/net'):
@@ -90,8 +122,9 @@ while SERVER is None:
                     raise ValueError("wrong key hash")
                 SERVER = host
                 SERVER_INTERFACE = host.split('%')[1]
+                NEED_LUKS = meta.get("need-luks")
                 with open(f'/sys/class/net/{SERVER_INTERFACE}/address') as mac_file:
-                    SERVER_INTERFACE_MAC = mac_file.read().strip()
+                    CLIENT_INTERFACE_MAC = mac_file.read().strip()
                 break
             elif data.startswith(b'stiefelsystem:discovery:autokexec-hello:' + KEY_HASH):
                 # solve the challenge
@@ -107,20 +140,29 @@ while SERVER is None:
         except BaseException as exc:
             print(f"server {host!r} is broken: {exc!r}")
 
+if NEED_LUKS:
+    # use systemd-tty-ask-password-agent
+    # and wait for input
+    luks_phrase = subprocess.check_output([
+        'systemd-ask-password',
+        'stiefelsystem root block device luks password'
+    ]).strip()
 
+    luks_enc = encrypt(luks_phrase)
+    luks_qry = f"&lukspw={base64.b64encode(luks_enc).decode()}"
+    del luks_phrase
+
+# challenge which the server will included in the requested tar file.
+# by it we make sure we get a fresh archive just for us.
 challenge = base64.b64encode(os.urandom(16)).decode()
-print(f'fetching {SERVER_HTTP_URL}/boot.tar.aes?challenge={challenge}')
-blob = urllib.request.urlopen(f'{SERVER_HTTP_URL}/boot.tar.aes?challenge={challenge}').read()
+requrl = f"{SERVER_HTTP_URL}/boot.tar.aes?challenge={challenge}{luks_qry}"
+print(f'fetching {requrl}')
+blob = urllib.request.urlopen(requrl).read()
 if len(blob) < 32:
     raise ValueError("corrupted boot.tar.aes")
-nonce = blob[:16]
-ciphertext = blob[16:-16]
-mac = blob[-16:]
 
-cipher = Cryptodome.Cipher.AES.new(KEY, Cryptodome.Cipher.AES.MODE_EAX, nonce=nonce, mac_len=16)
 print('decrypting boot.tar.aes')
-tar_blob = cipher.decrypt_and_verify(ciphertext, mac)
-del nonce, ciphertext, mac
+tar_blob = decrypt(blob)
 print('decryption done')
 
 stiefelmodules = []
@@ -134,10 +176,9 @@ with io.BytesIO(tar_blob) as tarfileobj:
         # validate challenge response
         with tar.extractfile(tar.getmember('challenge')) as fileobj:
             challenge_response = fileobj.read().decode()
-            expected_response = f'/boot.tar.aes?challenge={challenge}'
-            if challenge_response != expected_response:
+            if challenge_response != challenge:
                 print(f"challenge response: {challenge_response}")
-                print(f"expected response: {expected_response}")
+                print(f"expected response: {challenge}")
                 raise ValueError('bad challenge response - replay attack?')
 
         # extract this tar file
@@ -169,15 +210,16 @@ if any(mod in stiefelmodules for mod in ('system-debian', 'system-arch')):
         inner_cmdline +
         " stiefel_nbdhost=" + SERVER.replace(SERVER_INTERFACE, "stiefellink") +
         " stiefel_nbdname=stiefelblock" +  # name is hardcoded in stiefel-server
-        " stiefel_link=" + SERVER_INTERFACE_MAC
+        " stiefel_link=" + CLIENT_INTERFACE_MAC
     )
 
 elif 'system-gentoo' in stiefelmodules:
     # dracut nbd & network invocation from man dracut.cmdline:
     # netroot=nbd:srv:port[:fstype[:rootflags(fsflags)[:nbdopts]]]
+    # pls sync with test-qemu
     CMDLINE = (
         inner_cmdline +
-        " ifname=stiefellink:" + SERVER_INTERFACE_MAC +
+        " ifname=stiefellink:" + CLIENT_INTERFACE_MAC +
         " ip=stiefellink:link6" +
         " netroot=nbd:[" + SERVER.replace(SERVER_INTERFACE, "stiefellink") + "]:stiefelblock:::-persist"
     )
