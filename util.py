@@ -553,3 +553,20 @@ def copy_symlink_chain(rootpath, file_path):
         else:
             raise Exception(f"wtf {file_path} no symlink and doesn't exist")
             # else, copy the file and that's it
+
+
+def mac_to_v6ll(mac):
+    """
+    convert a mac address to a ipv6 link local address
+    """
+
+    mac_nr = int(mac.replace(':', ''), 16)
+
+    # cut out the v6ll bytes
+    # XOR the MSB with 0x02 to invert the universal/local mac bit
+    high1 = mac_nr >> 32 & 0xffff ^ 0x0200
+    high0 = mac_nr >> 24 & 0xff
+    low1 = mac_nr & 0xffff
+    low0 = mac_nr >> 16 & 0xff
+
+    return f'fe80::{high1:04x}:{high0:02x}ff:fe{low0:02x}:{low1:04x}'

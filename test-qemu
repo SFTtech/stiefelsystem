@@ -27,6 +27,7 @@ from util import (
     command,
     ensure_root,
     install_binary,
+    mac_to_v6ll,
 )
 
 ensure_root()
@@ -42,8 +43,13 @@ cli.add_argument('--srv-kernel', default=cfg.path.initrd + '/vmlinuz',
 cli.add_argument('--srv-initrd', default=cfg.path.cpio,
                  help='the initrd to loaded to this stiefel-server')
 
-cli.add_argument('mode')
+cli.add_argument('mode', choices=['client', 'server'])
+cli.add_argument('--cmdline',
+                 help='extra kernel cmdline args for the final system')
 cli.add_argument('--forward-usb')
+cli.add_argument('--clientkexecinvocation', action='store_true',
+                 help=("when set, get a qemu invocation to directly test "
+                       "a stiefel-client kexec run"))
 cli.add_argument('--graphical', action='store_true')
 cli.add_argument('--serialnetwork', action='store_true',
                  help="attach ttyS0 to the VM, exposed as telnet tcp port")
@@ -57,7 +63,32 @@ with contextlib.ExitStack() as exit_stack:
     def tmppath(name):
         return os.path.join(tmpdir, name)
 
+    # this is passed to the kernel to be stiefeled.
+    # they are used in addition to the options served by
+    # stiefel-server from /boot/stiefelsystem.json
+    inner_cmdline_l = [
+        "vga=795",
+        "console=ttyS0",
+    ]
+
+    if 'lvm' in cfg.modules:
+        inner_cmdline_l.append("root=/dev/mapper/qemustiefel-root")
+    else:
+        inner_cmdline_l.append("root=/dev/sda2")
+
+    if not args.graphical:
+        inner_cmdline_l.append("console=ttyS0")
+
+    if args.cmdline:
+        inner_cmdline_l.append(args.cmdline)
+
+    inner_cmdline = " ".join(inner_cmdline_l)
+
+    client_mac = "52:54:00:5f:70:02"
+
     if args.mode == 'client':
+        # client mode only works when a server is already running
+
         # check if our test might reboot the actual device...
         autokexec_active = command("systemctl", "is-active", "stiefel-autokexec.service",
                                    get_retval=True)
@@ -67,26 +98,9 @@ with contextlib.ExitStack() as exit_stack:
             print("-> please run:\nsystemctl stop stiefel-autokexec.service")
             exit(1)
 
-        # client mode only works when a server is already running
-        mac = "52:54:00:5f:70:02"
+        mac = client_mac
 
-        # this is passed to the kernel to be stiefeled
-        # they are used in addition to the options served by
-        # stiefel-server from /boot/stiefelsystem.json
-        inner_cmdline = [
-            "vga=795",
-            "console=ttyS0",
-        ]
-
-        if 'lvm' in cfg.modules:
-            inner_cmdline.append("root=/dev/mapper/qemustiefel-root")
-        else:
-            inner_cmdline.append("root=/dev/sda2")
-
-        if not args.graphical:
-            inner_cmdline.append("console=ttyS0")
-
-        inner_cmdline_b64 = base64.b64encode(" ".join(inner_cmdline).encode('utf-8')).decode('ascii')
+        inner_cmdline_b64 = base64.b64encode(inner_cmdline.encode('utf-8')).decode('ascii')
 
         cmdline = [
             "systemd.unit=stiefel-client.service",
@@ -94,6 +108,11 @@ with contextlib.ExitStack() as exit_stack:
             "stiefel_innercmdline=" + inner_cmdline_b64,
         ]
         qemu_args = ['-gdb', 'tcp::1234']
+
+        # qemu boots this kernel
+        kernel = args.srv_kernel
+        initrd = args.srv_initrd
+
 
     elif args.mode == 'server':
         mac = "52:54:00:5f:70:03"
@@ -227,6 +246,9 @@ with contextlib.ExitStack() as exit_stack:
                 elif bootpart_luks_uuid:
                     raise NotImplementedError("luks unlocking not implemented for non-dracut initrd")
 
+                if args.cmdline:
+                    stiefel_cmdline.append(args.cmdline)
+
                 json.dump({
                     "kernel": "kernel",
                     "initrd": "initrd",
@@ -287,6 +309,10 @@ with contextlib.ExitStack() as exit_stack:
             "-device", "virtio-scsi-pci,id=scsi0",
             "-device", "scsi-hd,drive=systemhdd,bus=scsi0.0",
         ]
+
+        # qemu boots this kernel
+        kernel = args.srv_kernel
+        initrd = args.srv_initrd
 
     elif args.mode == 'test':
         mac = "52:54:00:5f:70:04"
@@ -359,16 +385,64 @@ with contextlib.ExitStack() as exit_stack:
         cmdline.append("vga=795")
         confirm = False
 
-    command(
+    qemu_base = [
         "qemu-system-x86_64",
         "-machine", "q35,accel=kvm",
         "-cpu", "host",
         "-m", str(3 * 1024),
+    ]
+    qemu_kernel = [
         "-kernel", args.srv_kernel,
         "-initrd", args.srv_initrd,
+    ]
+    qemu_netdev = [
         "-netdev", f"tap,id=network0,script={tmppath('ifup-script')},downscript=no",
+    ]
+    qemu_devices = [
         "-device", f"virtio-net,netdev=network0,mac={mac}",
+    ]
+    qemu_cmdline = [
         "-append", " ".join(cmdline),
-        *qemu_args,
+    ]
+
+    if args.clientkexecinvocation:
+        # this is mostly useful for debugging the "real" initrd:
+        # it starts the machine just like after stiefelsystem
+        # kexec'd your real kernel+initramfs.
+        print("invocation for qemu to directly execute the "
+              "to-be-stiefeled client+initramfs:")
+        print()
+
+        # we should directly get this from stiefel-client code!
+        # instead we have to copy it :(
+        if 'system-gentoo' in cfg.modules:
+            inner_cmdline += (
+                " ifname=stiefellink:" + client_mac +
+                " ip=stiefellink:link6" +
+                " netroot=nbd:[" + mac_to_v6ll(mac) + "%stiefellink]:stiefelblock:::-persist"
+            )
+
+        if bootpart_luks_uuid:
+            inner_cmdline += f" rd.luks.uuid={bootpart_luks_uuid}"
+
+        client_kexec = qemu_base + [
+            # handy for debugging, but not necessary
+            "-gdb tcp::1234 -serial telnet:localhost:4321,server,wait -nographic"
+        ] + [
+            "-kernel", args.kernel,
+            "-initrd", args.initrd,
+        ] + qemu_netdev + [
+            "-device", f"virtio-net,netdev=network0,mac={client_mac}",
+        ] + ["-append", f"'{inner_cmdline}'"]
+
+        print(" ".join(client_kexec))
+
+        input("[enter] to continue")
+
+    qemu_launch = (qemu_base + qemu_kernel + qemu_netdev +
+                   qemu_devices + qemu_cmdline + qemu_args)
+
+    command(
+        *qemu_launch,
         confirm=confirm,
     )
