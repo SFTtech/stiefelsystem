@@ -44,6 +44,7 @@ if not args.skip_setup:
         'linux-image-amd64',  # needed for booting the stiefel system
         'python3',  # all payload scripts are written in Python3
         'python3-pycryptodome',
+        'python3-aiohttp',
         'systemd-container',  # to allow launching inside nspawn during this script
         'systemd-sysv',  # to provide symlinks in /sbin: init, poweroff, ...
     ]

@@ -1,4 +1,5 @@
 #!/usr/bin/python3 -u
+
 import base64
 import hashlib
 import hmac
@@ -140,6 +141,8 @@ while SERVER is None:
         except BaseException as exc:
             print(f"server {host!r} is broken: {exc!r}")
 
+boot_req_args = dict()
+
 if NEED_LUKS:
     # use systemd-tty-ask-password-agent
     # and wait for input
@@ -149,15 +152,21 @@ if NEED_LUKS:
     ]).strip()
 
     luks_enc = encrypt(luks_phrase)
-    luks_qry = f"&lukspw={base64.b64encode(luks_enc).decode()}"
     del luks_phrase
+    boot_req_args["lukspw"] = base64.b64encode(luks_enc).decode()
 
 # challenge which the server will included in the requested tar file.
 # by it we make sure we get a fresh archive just for us.
 challenge = base64.b64encode(os.urandom(16)).decode()
-requrl = f"{SERVER_HTTP_URL}/boot.tar.aes?challenge={challenge}{luks_qry}"
+
+boot_req_args["challenge"] = challenge
+requrl = f"{SERVER_HTTP_URL}/boot.tar.aes"
+reqdata = json.dumps(boot_req_args).encode()
 print(f'fetching {requrl}')
-blob = urllib.request.urlopen(requrl).read()
+
+with urllib.request.urlopen(requrl, reqdata) as bootreq:
+    blob = bootreq.read()
+
 if len(blob) < 32:
     raise ValueError("corrupted boot.tar.aes")
 
