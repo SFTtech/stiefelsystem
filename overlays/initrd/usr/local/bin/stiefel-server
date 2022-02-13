@@ -11,7 +11,6 @@ import re
 import shutil
 import socket
 import subprocess
-import struct
 import tarfile
 import time
 import traceback

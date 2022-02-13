@@ -7,10 +7,12 @@ from util import (
     command,
     download_tar,
     ensure_root,
+    get_consent,
     initrd_write,
     list_files_in_packages,
     mount_tmpfs,
     umount,
+    warn,
 )
 
 ensure_root()
@@ -20,9 +22,25 @@ cli.add_argument('--debian-mirror', default='http://mirror.stusta.de/debian/')
 cli.add_argument('--out', default=cfg.path.cpio, help="output cpio file (%(default)s)")
 cli.add_argument('--compressor', default=cfg.packing.compressor)
 cli.add_argument('--skip-setup', action='store_true')
+cli.add_argument('--update', action='store_true')
 cli.add_argument('--tmp-work', action='store_true',
                  help='use a tmpfs for work and cachedir')
 args = cli.parse_args()
+
+# Some random sanity checks
+selected_system_modules = sum(
+    [mod in ('system-gentoo', 'system-arch', 'system-arch-dracut', 'system-gentoo') for mod in cfg.modules])
+
+if selected_system_modules != 1:
+    warn("Please select exactly one system-* module")
+    raise SystemExit(1)
+
+if command('uname', '-r', capture_stdout=True).decode()[:-1] not in os.listdir('/lib/modules'):
+    warn('Modules for running kernel not found in /lib/modules. If you just updated your arch linux, you probably '
+         'should reboot before continuing.\nIf you are not running arch, I don\'t know how you triggered this '
+         'message.\nDo you want to continue?')
+    if not get_consent():
+        raise SystemExit(1)
 
 if not args.skip_setup:
     # discard existing ramdisk content
@@ -75,6 +93,7 @@ if not args.skip_setup:
         '--components=main,contrib,non-free',
         '--merged-usr',
         '--verbose',
+        '--merged-usr',
         'stable',
         cfg.path.initrd,
         args.debian_mirror
@@ -242,6 +261,10 @@ if not args.skip_setup:
             kernel_name,
             nspawn=cfg.path.initrd,
         )
+
+if args.update:
+    command('apt', 'update', nspawn=cfg.path.initrd_devel)
+    command('apt', 'upgrade', nspawn=cfg.path.initrd_devel)
 
 if 'debug' in cfg.modules:
     command('updatedb', nspawn=cfg.path.initrd)

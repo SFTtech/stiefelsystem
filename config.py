@@ -100,7 +100,13 @@ class AutoKexecConfig:
     Configuration for stiefel-autokexec service that runs on the laptop
     """
     def __init__(self, raw):
-        self.macs = ensure_stringlist(raw['macs'])
+        self.mac_detection = ensure_bool(raw['mac_detection'])
+        self.broadcast = ensure_bool(raw['broadcast'])
+        if self.mac_detection:
+            self.macs = ensure_stringlist(raw['macs'])
+        else:
+            self.macs = []
+
 
 
 class ServerSetupConfig:
