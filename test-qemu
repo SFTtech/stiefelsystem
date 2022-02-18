@@ -86,6 +86,9 @@ with contextlib.ExitStack() as exit_stack:
 
     client_mac = "52:54:00:5f:70:02"
 
+    bootpart_luks = None
+    bootpart_luks_uuid = None
+
     if args.mode == 'client':
         # client mode only works when a server is already running
 
@@ -150,8 +153,6 @@ with contextlib.ExitStack() as exit_stack:
             bootpartition_name = loop_device_name + 'p1'
             rootpartition_name = loop_device_name + 'p2'
 
-            bootpart_luks = None
-            bootpart_luks_uuid = None
             if cfg.boot.luks_block is not None:
                 luks_password = "sft.lol"
                 command('echo', 'The LUKS password is: ', luks_password)
@@ -235,7 +236,7 @@ with contextlib.ExitStack() as exit_stack:
                 ]
 
                 # TODO: actually should be 'initrd-dracut'
-                if 'system-gentoo' in cfg.modules:
+                if 'system-gentoo' in cfg.modules or 'system-arch-dracut' in cfg.modules:
                     stiefel_cmdline.extend([
                         "rd.info",
                         "rd.shell",
@@ -389,7 +390,7 @@ with contextlib.ExitStack() as exit_stack:
         "qemu-system-x86_64",
         "-machine", "q35,accel=kvm",
         "-cpu", "host",
-        "-m", str(3 * 1024),
+        "-m", str(3 * 1024 if args.mode == "server" else 5 * 1024),
     ]
     qemu_kernel = [
         "-kernel", args.srv_kernel,
@@ -415,7 +416,7 @@ with contextlib.ExitStack() as exit_stack:
 
         # we should directly get this from stiefel-client code!
         # instead we have to copy it :(
-        if 'system-gentoo' in cfg.modules:
+        if any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
             inner_cmdline += (
                 " ifname=stiefellink:" + client_mac +
                 " ip=stiefellink:link6" +

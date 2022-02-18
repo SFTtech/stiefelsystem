@@ -222,9 +222,9 @@ if any(mod in stiefelmodules for mod in ('system-debian', 'system-arch')):
         " stiefel_link=" + CLIENT_INTERFACE_MAC
     )
 
-elif 'system-gentoo' in stiefelmodules:
+elif any(mod in stiefelmodules for mod in ('system-gentoo', 'system-arch-dracut')):
     # dracut nbd & network invocation from man dracut.cmdline:
-    # netroot=nbd:srv:port[:fstype[:rootflags(fsflags)[:nbdopts]]]
+    # netroot=nbd:srv:export[:fstype[:rootflags(fsflags)[:nbdopts]]]
     # pls sync with test-qemu
     CMDLINE = (
         inner_cmdline +

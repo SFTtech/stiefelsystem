@@ -48,6 +48,8 @@ boot:
 
 # settings for automatic reboot of the laptop into stiefel-server
 autokexec:
+    broadcast: True
+    mac_detection: False
     # you probably don't need this!
     # modern stiefelsystem has network discovery messages!
     #

@@ -104,9 +104,16 @@ def kexec_on_server_discovery_message(aes_key_hash, hmac_key):
             else:
                 print(f'bad HMAC signature for autokexec-reboot challenge')
 
-multiprocessing.Process(
-    target=kexec_on_server_discovery_message,
-    args=(config['aes-key-hash'].encode(), config['hmac-key'].encode())
-).start()
 
-kexec_on_adapter_found(config['autokexec-triggers']['adapters'])
+if not config['autokexec-triggers']['mac_detection'] and not config['autokexec-triggers']['mac_detection']:
+    print("no autokexec method enabled. Quitting")
+    raise SystemExit(1)
+
+if config['autokexec-triggers']['broadcast']:
+    multiprocessing.Process(
+        target=kexec_on_server_discovery_message,
+        args=(config['aes-key-hash'].encode(), config['hmac-key'].encode())
+    ).start()
+
+if config['autokexec-triggers']['mac_detection']:
+    kexec_on_adapter_found(config['autokexec-triggers']['adapters'])

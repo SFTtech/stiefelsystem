@@ -43,6 +43,8 @@ if 'base' in cfg.modules:
         'aes-key-hash': hashlib.sha256(KEY).hexdigest(),
         'hmac-key': hashlib.sha256(b'autokexec-reboot/' + KEY).hexdigest(),
         "autokexec-triggers": {
+            "mac_detectoion": cfg.autokexec.macs,
+            "broadcast": cfg.autokexec.broadcast,
             "adapters": cfg.autokexec.macs,
         },
         "bootdisk": cfg.boot.disk,
@@ -114,7 +116,7 @@ elif 'system-debian' in cfg.modules:
         install_folder('overlays/server-os-debian')
         command('update-initramfs', '-u', '-k', 'all')
 
-elif 'system-gentoo' in cfg.modules:
+elif any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
     # tell stiefel-server which kernel to serve to a stiefel-client,
     # relative to /boot
     boot_config = {
@@ -129,6 +131,9 @@ elif 'system-gentoo' in cfg.modules:
 
     if 'nbd' in cfg.modules:
         install_folder('overlays/server-os-dracut-nbd')
+        if 'system-arch-dracut' in cfg.modules:
+            install_folder('overlays/server-os-dracut-arch')
+        command('dracut', cfg.boot.initrd, '--add', ' nbd ', '--no-hostonly', '--force')
 
 else:
     raise Exception("no system-specific distro config module is enabled")
