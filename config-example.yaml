@@ -41,6 +41,7 @@ boot:
         kernel: /boot/vmlinuz-linux
         initrd: /boot/initramfs-linux.img
         # cmdline that will be given to the stiefeled system
+        # root has to be your real system's '/' filesystem
         cmdline:
             - root=UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
             - rw
