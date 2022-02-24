@@ -112,7 +112,7 @@ while SERVER is None:
         try:
             if data == b"stiefelsystem:discovery:server-hello:" + KEY_HASH:
                 # test if we can talk to the server on HTTP
-                SERVER_HTTP_URL = f"http://[{host.replace('%', '%25')}]"
+                SERVER_HTTP_URL = f"http://[{host.replace('%', '%25')}]:4644"
                 print(f'fetching {SERVER_HTTP_URL}')
                 request = urllib.request.urlopen(SERVER_HTTP_URL, timeout=1)
                 meta = json.loads(request.read().decode('utf-8'))
