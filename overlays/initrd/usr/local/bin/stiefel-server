@@ -13,30 +13,81 @@ import socket
 import subprocess
 import tarfile
 import time
-import traceback
-import urllib
+import argparse
+import configparser
 
 import Cryptodome.Cipher.AES
 
-# automatically turn the display off to save power
-subprocess.check_call(['setterm', '--powerdown', '1', '--blank', '1'])
+"""
+syntax for config file
 
-# read config from kernel cmdline
-print(f"reading config from kernel cmdline")
+[stiefel]
+bootdisk = "/dev/disk/by-id/SOME-ID_HERE"
+files-path = "./files"
 
-with open('/proc/cmdline') as cmdlinefile:
-    cmdline = cmdlinefile.read()
-cmdlineargs = {}
-for entry in cmdline.strip().split():
-    try:
-        key, value = entry.split('=', maxsplit=1)
-        cmdlineargs[key] = value
-    except ValueError:
-        continue
+the directory of files-path must contain
+ - stiefelsystem.json (normally found in /boot)
+ - aes-key
+ - kernel (as named in stiefelsystem.json)
+ - initramfs (as named in stiefelsystem.json)
+
+-> setup:
+- copy stiefelsystem.json, kernel, initramfs, aes-key files to ./files
+- run it
+"""
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument("-c", "--config",
+                    help="path to config file")
+parser.add_argument("--no-nbd", action="store_true",
+                    help="do not generate a config file for nbd-server")
+parser.add_argument("--add-cmd",
+                    help="arguments to add to the served cmdline")
+args = parser.parse_args()
+
+
+if args.config:
+    config = configparser.ConfigParser()
+    config.read(args.config)
+
+    cmdlineargs = {
+        "stiefel_bootdisk": json.loads(config.get("stiefel", "bootdisk")),
+        "stiefel_bootpart": ""
+    }
+    files_path = json.loads(config.get("stiefel", "files-path"))
+    keyfilepath = os.path.join(files_path, "aes-key")
+    nbd_config_path = os.path.join(files_path, "./nbd-config")
+
+    standalone = True
+
+else:
+    # automatically turn the display off to save power
+    subprocess.check_call(['setterm', '--powerdown', '1', '--blank', '1'])
+
+    # the boot partition is mounted here
+    files_path = "/mnt/"
+
+    # read config from kernel cmdline
+    print(f"reading config from kernel cmdline")
+
+    with open('/proc/cmdline') as cmdlinefile:
+        cmdline = cmdlinefile.read()
+    cmdlineargs = {}
+    for entry in cmdline.strip().split():
+        try:
+            key, value = entry.split('=', maxsplit=1)
+            cmdlineargs[key] = value
+        except ValueError:
+            continue
+
+    keyfilepath = "/aes-key"
+    nbd_config_path = "/etc/nbd-server/config"
+    standalone = False
 
 print(f"config: {cmdlineargs}")
 
-with open("/aes-key", "rb") as keyfile:
+with open(keyfilepath, "rb") as keyfile:
     KEY = keyfile.read()
 KEY_HASH = hashlib.sha256(KEY).hexdigest().encode()
 
@@ -127,23 +178,34 @@ BOOTPART_LUKS = cmdlineargs.get("stiefel_bootpart_luks")
 BOOTPART = cmdlineargs["stiefel_bootpart"]
 UNSECURE = bool(int(cmdlineargs.get("stiefel_unsecure", "0")))
 
-multiprocessing.Process(target=continuous_network_setup).start()
+if not standalone:
+    multiprocessing.Process(target=continuous_network_setup).start()
 multiprocessing.Process(target=discovery_server).start()
 
-# create NBD config
-with open("/etc/nbd-server/config", "w") as nbdconfigfile:
-    nbdconfigfile.write(
-        f"""
-        [generic]
-        [stiefelblock]
-        exportname = {BLKDEV}
-        copyonwrite = false
-        """
-    )
+# create NBD server config
+nbdconfig = f"""
+[generic]
+[stiefelblock]
+exportname = {BLKDEV}
+copyonwrite = false
+"""
 
-# open NBD server
-print(f"opening NBD server for {BLKDEV}")
-subprocess.check_call(['systemctl', 'start', 'nbd-server'])
+if args.no_nbd:
+    print("NBD config file is not written.\n Content would be:")
+    print(nbdconfig)
+else:
+    with open(nbd_config_path, "w") as nbdconfigfile:
+        nbdconfigfile.write(nbdconfig)
+
+    # open NBD server
+    print(f"opening NBD server for {BLKDEV}")
+    if standalone:
+        def standalone_nbd():
+            print("starting NBD serve in standalone mode")
+            subprocess.check_call(['nbd-server', '-C', nbd_config_path])
+        multiprocessing.Process(target=standalone_nbd).start()
+    else:
+        subprocess.check_call(['systemctl', 'start', 'nbd-server'])
 
 
 def read_binary(filename):
@@ -157,7 +219,7 @@ def find_boot_config():
     print('trying to find boot config')
 
     # kernel hints were manually created for the stiefelsystem
-    stiefelsystem_config = read_binary("/mnt/stiefelsystem.json")
+    stiefelsystem_config = read_binary(os.path.join(files_path, "stiefelsystem.json"))
 
     ret = {
         'kernel': None,
@@ -172,35 +234,35 @@ def find_boot_config():
         ret['stiefelmodules'] = " ".join(stiefelsystem_config_json['stiefelmodules']).encode('utf-8')
 
         kerneldef = stiefelsystem_config_json.get('kernel')
+        while kerneldef.startswith("/"):
+            kerneldef = kerneldef[1:]
         if kerneldef:
-            ret['kernel'] = os.path.normpath(
-                b'/mnt/' + kerneldef.encode('utf-8')
-            )
+            ret['kernel'] = os.path.join(files_path, kerneldef).encode('utf-8')
 
         initrddef = stiefelsystem_config_json.get('initrd')
+        while initrddef.startswith("/"):
+            initrddef = initrddef[1:]
         if initrddef:
-            ret['initrd'] = os.path.normpath(
-                b'/mnt/' + stiefelsystem_config_json['initrd'].encode('utf-8')
-            )
+            ret['initrd'] = os.path.join(files_path, initrddef).encode('utf-8')
 
     # we're missing kernel invocation options, try to parse the bootloader config
     if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
         # try to determine kernel from syslinux config
-        syslinux_config = read_binary("/mnt/syslinux/syslinux.cfg")
+        syslinux_config = read_binary(os.path.join(files_path, "/syslinux/syslinux.cfg"))
         if syslinux_config is not None:
-            ret['kernel'] = os.path.normpath(os.path.join(
-                b'/mnt/syslinux',
+            ret['kernel'] = os.path.join(
+                os.path.join(files_path, "syslinux").encode('utf-8'),
                 re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
-            ))
-            ret['initrd'] = os.path.normpath(os.path.join(
-                b'/mnt/syslinux',
+            )
+            ret['initrd'] = os.path.join(
+                os.path.join(files_path, "syslinux").encode('utf-8'),
                 re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
-            ))
+            )
             # TODO: cmdline parsing for syslinux cfg
 
     if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
         # try to determine kernel from grub config
-        grub_config = read_binary("/mnt/grub/grub.cfg")
+        grub_config = read_binary(os.path.join(files_path, "grub/grub.cfg"))
         if grub_config is not None:
             kernelcmd = re.search(rb'^\s*linux\s+(\S+)((?:\s(?:\S+))*)\s*$', grub_config, re.M)
             if not kernelcmd:
@@ -210,22 +272,16 @@ def find_boot_config():
             if not initrdcmd:
                 raise Exception('could not find initrd definition in grub cfg')
 
-            ret['kernel'] = os.path.normpath(
-                b'/mnt/' +
-                kernelcmd.group(1)
-            )
-            ret['initrd'] = os.path.normpath(
-                b'/mnt/' +
-                initrdcmd.group(1)
-            )
-            ret['cmdline'] = os.path.normpath(
-                b'/mnt/' +
-                kernelcmd.group(2)
-            )
+            ret['kernel'] = os.path.join(files_path, kernelcmd.group(1))
+            ret['initrd'] = os.path.join(files_path, initrdcmd.group(1))
+            ret['cmdline'] = os.path.join(files_path, kernelcmd.group(2))
 
     for k, v in ret.items():
         if not v:
             raise Exception(f'no configuration found for {k!r}')
+
+    if args.add_cmd:
+        ret['cmdline'] += b' ' + args.add_cmd.encode('utf-8')
 
     return ret
 
@@ -260,7 +316,8 @@ async def generate_boot_tar(payload):
                                    f'--exit-if-exists={BOOTPART}'])
 
     try:
-        subprocess.check_call(['mount', '-oro', BOOTPART, '/mnt'])
+        if not standalone:
+            subprocess.check_call(['mount', '-oro', BOOTPART, files_path])
         bootcfg = find_boot_config()
 
         print(f"kernel: {bootcfg['kernel'].decode(errors='replace')!r}")
@@ -269,7 +326,8 @@ async def generate_boot_tar(payload):
         initrdblob = read_binary(bootcfg['initrd'])
 
     finally:
-        subprocess.check_call(['umount', '/mnt'])
+        if not standalone:
+            subprocess.check_call(['umount', files_path])
 
     if BOOTPART_LUKS:
         if shutil.which('lvm'):
@@ -327,7 +385,7 @@ async def server_infos(request):
 
 async def get_boot_tar_noauth(request):
     if UNSECURE:
-        return aiohttp.web.Response(body=get_boot_tar({'challenge': ""}),
+        return aiohttp.web.Response(body=generate_boot_tar({'challenge': ""}),
                                     content_type="application/x-binary")
 
     return aiohttp.web.Response(body="only boot.tar.aes is available",

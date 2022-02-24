@@ -54,35 +54,28 @@ cli.add_argument('--graphical', action='store_true')
 cli.add_argument('--serialnetwork', action='store_true',
                  help="attach ttyS0 to the VM, exposed as telnet tcp port")
 cli.add_argument('--skip-confirm', action='store_true')
+cli.add_argument('--use-existing-bridge',
+                 help="attach qemu to this existing bridge")
 cli.add_argument('--extra-files')
 args = cli.parse_args()
+
+if args.clientkexecinvocation and not args.mode == 'server':
+    cli.error("the client kexec invocation display only works in server mode")
 
 
 with contextlib.ExitStack() as exit_stack:
     tmpdir = exit_stack.enter_context(tempfile.TemporaryDirectory())
+
     def tmppath(name):
         return os.path.join(tmpdir, name)
 
-    # this is passed to the kernel to be stiefeled.
+    # inner_cmdline is passed to the
+    # stiefeled real system kernel by stiefel-client.
     # they are used in addition to the options served by
     # stiefel-server from /boot/stiefelsystem.json
-    inner_cmdline_l = [
-        "vga=795",
-        "console=ttyS0",
-    ]
-
-    if 'lvm' in cfg.modules:
-        inner_cmdline_l.append("root=/dev/mapper/qemustiefel-root")
-    else:
-        inner_cmdline_l.append("root=/dev/sda2")
-
+    inner_cmdline = "vga=795"
     if not args.graphical:
-        inner_cmdline_l.append("console=ttyS0")
-
-    if args.cmdline:
-        inner_cmdline_l.append(args.cmdline)
-
-    inner_cmdline = " ".join(inner_cmdline_l)
+        inner_cmdline += " console=ttyS0"
 
     client_mac = "52:54:00:5f:70:02"
 
@@ -235,7 +228,12 @@ with contextlib.ExitStack() as exit_stack:
                     "verbose",
                 ]
 
-                # TODO: actually should be 'initrd-dracut'
+                if 'lvm' in cfg.modules:
+                    client_root = "root=/dev/mapper/qemustiefel-root"
+                else:
+                    client_root = "root=/dev/sda2"
+                stiefel_cmdline.append(client_root)
+
                 if 'system-gentoo' in cfg.modules or 'system-arch-dracut' in cfg.modules:
                     stiefel_cmdline.extend([
                         "rd.info",
@@ -276,11 +274,12 @@ with contextlib.ExitStack() as exit_stack:
                            ""))
             command('chmod', '+x', tmppath('mntroot') + '/sbin/init')
 
-        # setup the bridge that allows connection to the client VM
-        command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
-        command('ip', 'link', 'set', 'dev', 'br0', 'up')
-        command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
-        exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
+        if not args.use_existing_bridge:
+            # setup the bridge that allows connection to the client VM
+            command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
+            command('ip', 'link', 'set', 'dev', 'br0', 'up')
+            command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
+            exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
 
         # because inside qemu the loop-device is called sda
         if bootpartition_name == loop_device_name + 'p1':
@@ -334,8 +333,8 @@ with contextlib.ExitStack() as exit_stack:
         ifup_script.writelines([
             "#!/bin/sh\n",
             "ip l set $1 up\n",
-            "ip l set dev $1 master br0\n",
-            "ip l set br0 up\n",
+            f"ip l set dev $1 master {args.use_existing_bridge or 'br0'}\n",
+            f"ip l set {args.use_existing_bridge or 'br0'} up\n",
         ])
     os.chmod(tmppath('ifup-script'), 0o755)
 
@@ -406,15 +405,20 @@ with contextlib.ExitStack() as exit_stack:
         "-append", " ".join(cmdline),
     ]
 
+    # generate what the stiefel-client would kexec,
+    # so one can bypass the stiefelsystem in its entirety
+    # this is mostly useful for debugging the "real" initrd:
+    # it starts the machine just like after stiefelsystem
+    # kexec'd your real kernel+initramfs.
     if args.clientkexecinvocation:
-        # this is mostly useful for debugging the "real" initrd:
-        # it starts the machine just like after stiefelsystem
-        # kexec'd your real kernel+initramfs.
         print("invocation for qemu to directly execute the "
               "to-be-stiefeled client+initramfs:")
         print()
 
-        # we should directly get this from stiefel-client code!
+        # "simulate" the cmdline transfer from stiefel-server
+        inner_cmdline += " ".join(stiefel_cmdline)
+
+        # we should directly get these cmdline options from stiefel-client code!
         # instead we have to copy it :(
         if any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
             inner_cmdline += (
@@ -422,9 +426,6 @@ with contextlib.ExitStack() as exit_stack:
                 " ip=stiefellink:link6" +
                 " netroot=nbd:[" + mac_to_v6ll(mac) + "%stiefellink]:stiefelblock:::-persist"
             )
-
-        if bootpart_luks_uuid:
-            inner_cmdline += f" rd.luks.uuid={bootpart_luks_uuid}"
 
         client_kexec = qemu_base + [
             # handy for debugging, but not necessary

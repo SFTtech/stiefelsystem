@@ -133,7 +133,7 @@ elif any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
         install_folder('overlays/server-os-dracut-nbd')
         if 'system-arch-dracut' in cfg.modules:
             install_folder('overlays/server-os-dracut-arch')
-        command('dracut', cfg.boot.initrd, '--add', ' nbd ', '--no-hostonly', '--force')
+        command('dracut', cfg.boot.initrd, '--add', '" nbd "', '--no-hostonly', '--force')
 
 else:
     raise Exception("no system-specific distro config module is enabled")
