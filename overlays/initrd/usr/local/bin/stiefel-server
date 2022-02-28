@@ -18,6 +18,7 @@ import configparser
 
 import Cryptodome.Cipher.AES
 
+
 """
 syntax for config file
 
@@ -42,9 +43,97 @@ parser.add_argument("-c", "--config",
                     help="path to config file")
 parser.add_argument("--no-nbd", action="store_true",
                     help="do not generate a config file for nbd-server")
+parser.add_argument("--no-wg", action="store_true",
+                    help="do not open a wireguard interface")
 parser.add_argument("--add-cmd",
                     help="arguments to add to the served cmdline")
 args = parser.parse_args()
+
+
+def read_binary(filename):
+    if not os.path.isfile(filename):
+        return None
+    with open(filename, 'rb') as fileobj:
+        return fileobj.read()
+
+
+def find_boot_config():
+    print('trying to find boot config')
+
+    # kernel hints were manually created for the stiefelsystem
+    stiefelsystem_config = read_binary(os.path.join(files_path, "stiefelsystem.json"))
+
+    ret = {
+        'kernel': None,
+        'initrd': None,
+        'cmdline': None,
+        'stiefelmodules': None,
+        'wg_serverkey': None,
+        'wg_server': None,
+        'wg_client': None,
+        'wg_clientkey': None,
+    }
+
+    if stiefelsystem_config is not None:
+        stiefelsystem_config_json = json.loads(stiefelsystem_config)
+        ret['cmdline'] = " ".join(stiefelsystem_config_json['cmdline']).encode('utf-8')
+        ret['stiefelmodules'] = " ".join(stiefelsystem_config_json['stiefelmodules']).encode('utf-8')
+        ret['wg_server'] = stiefelsystem_config_json['wg_server']
+        ret['wg_client'] = stiefelsystem_config_json['wg_client']
+        ret['wg_serverkey'] = stiefelsystem_config_json['wg_serverkey']
+        ret['wg_clientkey'] = stiefelsystem_config_json['wg_clientkey']
+
+        kerneldef = stiefelsystem_config_json.get('kernel')
+        while kerneldef.startswith("/"):
+            kerneldef = kerneldef[1:]
+        if kerneldef:
+            ret['kernel'] = os.path.join(files_path, kerneldef).encode('utf-8')
+
+        initrddef = stiefelsystem_config_json.get('initrd')
+        while initrddef.startswith("/"):
+            initrddef = initrddef[1:]
+        if initrddef:
+            ret['initrd'] = os.path.join(files_path, initrddef).encode('utf-8')
+
+    # we're missing kernel invocation options, try to parse the bootloader config
+    if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
+        # try to determine kernel from syslinux config
+        syslinux_config = read_binary(os.path.join(files_path, "/syslinux/syslinux.cfg"))
+        if syslinux_config is not None:
+            ret['kernel'] = os.path.join(
+                os.path.join(files_path, "syslinux").encode('utf-8'),
+                re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
+            )
+            ret['initrd'] = os.path.join(
+                os.path.join(files_path, "syslinux").encode('utf-8'),
+                re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
+            )
+            # TODO: cmdline parsing for syslinux cfg
+
+    if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
+        # try to determine kernel from grub config
+        grub_config = read_binary(os.path.join(files_path, "grub/grub.cfg"))
+        if grub_config is not None:
+            kernelcmd = re.search(rb'^\s*linux\s+(\S+)((?:\s(?:\S+))*)\s*$', grub_config, re.M)
+            if not kernelcmd:
+                raise Exception('could not find kernel invocation in grub cfg')
+
+            initrdcmd = re.search(rb'^\s*initrd\s+(\S+)\s', grub_config, re.M)
+            if not initrdcmd:
+                raise Exception('could not find initrd definition in grub cfg')
+
+            ret['kernel'] = os.path.join(files_path, kernelcmd.group(1))
+            ret['initrd'] = os.path.join(files_path, initrdcmd.group(1))
+            ret['cmdline'] = os.path.join(files_path, kernelcmd.group(2))
+
+    for k, v in ret.items():
+        if not v:
+            raise Exception(f'no configuration found for {k!r}')
+
+    if args.add_cmd:
+        ret['cmdline'] += b' ' + args.add_cmd.encode('utf-8')
+
+    return ret
 
 
 if args.config:
@@ -190,6 +279,26 @@ exportname = {BLKDEV}
 copyonwrite = false
 """
 
+
+def setup_wireguard(config):
+    subprocess.check_call(['ip', 'link', 'add', 'wgstiefelserver', 'type', 'wireguard'])
+    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg_serverkey"]})'])
+    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'peer', config["wg_client"], 'allowed-ips', 'fe80::/64'])
+    subprocess.check_call(['ip', 'link', 'set', 'wgstiefelserver', 'up'])
+    subprocess.check_call(['ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver'])
+
+
+if args.no_wg:
+    config = find_boot_config()
+    print("THIS WOULD BE RUN WITHOUT --no-wg")
+    print('ip', 'link', 'add', 'wgstiefelserver', 'type', 'wireguard')
+    print('wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg_serverkey"]})')
+    print('wg', 'set', 'wgstiefelserver', 'peer', config["wg_client"], 'allowed-ips', 'fe80::/64')
+    print('ip', 'link', 'set', 'wgstiefelserver', 'up')
+    print('ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver')
+else:
+    setup_wireguard(find_boot_config())
+
 if args.no_nbd:
     print("NBD config file is not written.\n Content would be:")
     print(nbdconfig)
@@ -206,84 +315,6 @@ else:
         multiprocessing.Process(target=standalone_nbd).start()
     else:
         subprocess.check_call(['systemctl', 'start', 'nbd-server'])
-
-
-def read_binary(filename):
-    if not os.path.isfile(filename):
-        return None
-    with open(filename, 'rb') as fileobj:
-        return fileobj.read()
-
-
-def find_boot_config():
-    print('trying to find boot config')
-
-    # kernel hints were manually created for the stiefelsystem
-    stiefelsystem_config = read_binary(os.path.join(files_path, "stiefelsystem.json"))
-
-    ret = {
-        'kernel': None,
-        'initrd': None,
-        'cmdline': None,
-        'stiefelmodules': None,
-    }
-
-    if stiefelsystem_config is not None:
-        stiefelsystem_config_json = json.loads(stiefelsystem_config)
-        ret['cmdline'] = " ".join(stiefelsystem_config_json['cmdline']).encode('utf-8')
-        ret['stiefelmodules'] = " ".join(stiefelsystem_config_json['stiefelmodules']).encode('utf-8')
-
-        kerneldef = stiefelsystem_config_json.get('kernel')
-        while kerneldef.startswith("/"):
-            kerneldef = kerneldef[1:]
-        if kerneldef:
-            ret['kernel'] = os.path.join(files_path, kerneldef).encode('utf-8')
-
-        initrddef = stiefelsystem_config_json.get('initrd')
-        while initrddef.startswith("/"):
-            initrddef = initrddef[1:]
-        if initrddef:
-            ret['initrd'] = os.path.join(files_path, initrddef).encode('utf-8')
-
-    # we're missing kernel invocation options, try to parse the bootloader config
-    if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
-        # try to determine kernel from syslinux config
-        syslinux_config = read_binary(os.path.join(files_path, "/syslinux/syslinux.cfg"))
-        if syslinux_config is not None:
-            ret['kernel'] = os.path.join(
-                os.path.join(files_path, "syslinux").encode('utf-8'),
-                re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
-            )
-            ret['initrd'] = os.path.join(
-                os.path.join(files_path, "syslinux").encode('utf-8'),
-                re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
-            )
-            # TODO: cmdline parsing for syslinux cfg
-
-    if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
-        # try to determine kernel from grub config
-        grub_config = read_binary(os.path.join(files_path, "grub/grub.cfg"))
-        if grub_config is not None:
-            kernelcmd = re.search(rb'^\s*linux\s+(\S+)((?:\s(?:\S+))*)\s*$', grub_config, re.M)
-            if not kernelcmd:
-                raise Exception('could not find kernel invocation in grub cfg')
-
-            initrdcmd = re.search(rb'^\s*initrd\s+(\S+)\s', grub_config, re.M)
-            if not initrdcmd:
-                raise Exception('could not find initrd definition in grub cfg')
-
-            ret['kernel'] = os.path.join(files_path, kernelcmd.group(1))
-            ret['initrd'] = os.path.join(files_path, initrdcmd.group(1))
-            ret['cmdline'] = os.path.join(files_path, kernelcmd.group(2))
-
-    for k, v in ret.items():
-        if not v:
-            raise Exception(f'no configuration found for {k!r}')
-
-    if args.add_cmd:
-        ret['cmdline'] += b' ' + args.add_cmd.encode('utf-8')
-
-    return ret
 
 
 async def generate_boot_tar(payload):
@@ -368,6 +399,17 @@ async def generate_boot_tar(payload):
             tf = tarfile.TarInfo('stiefelmodules')
             tf.size = len(stiefelmodulelist)
             tar.addfile(tf, io.BytesIO(stiefelmodulelist))
+
+            # wg stuff
+            wg_server = bootcfg['wg_server'].encode('utf-8')
+            tf = tarfile.TarInfo('wg_server')
+            tf.size = len(wg_server)
+            tar.addfile(tf, io.BytesIO(wg_server))
+
+            wg_clients = bootcfg['wg_clientkey'].encode('utf-8')
+            tf = tarfile.TarInfo('wg_clientkey')
+            tf.size = len(wg_clients)
+            tar.addfile(tf, io.BytesIO(wg_clients))
 
         fileobj.seek(0)
         return fileobj.read()

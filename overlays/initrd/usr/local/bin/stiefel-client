@@ -7,9 +7,7 @@ import io
 import json
 import os
 import socket
-import struct
 import subprocess
-import sys
 import tarfile
 import time
 import urllib.request
@@ -203,6 +201,10 @@ with io.BytesIO(tar_blob) as tarfileobj:
             elif member.name == 'stiefelmodules':
                 # cmdline for the kexec'd real kernel
                 stiefelmodules = data.decode().split(" ")
+            elif member.name == 'wg_server':
+                serverkey = data.decode('utf-8')
+            elif member.name == 'wg_clientkey':
+                clientprivkey = data.decode('utf-8')
             else:
                 with open(f'/{member.name}', 'wb') as fileobj:
                     fileobj.write(data)
@@ -213,16 +215,14 @@ print('server cmdline: %s' % "\n".join(inner_cmdline.split()))
 # additional inner cmdline arguments given to the stiefel-client-kernel-cmdline
 inner_cmdline += ' ' + base64.b64decode(cmdlineargs.get("stiefel_innercmdline", "")).decode()
 
+inner_cmdline += f' wg_privkey={clientprivkey} wg_pubkey={serverkey} wg_endpoint=[{SERVER.replace(SERVER_INTERFACE, "stiefellink")}]:51820 '
 
-if any(mod in stiefelmodules for mod in ('system-debian', 'system-arch')):
-    CMDLINE = (
-        inner_cmdline +
-        " stiefel_nbdhost=" + SERVER.replace(SERVER_INTERFACE, "stiefellink") +
-        " stiefel_nbdname=stiefelblock" +  # name is hardcoded in stiefel-server
-        " stiefel_link=" + CLIENT_INTERFACE_MAC
-    )
-
-elif any(mod in stiefelmodules for mod in ('system-gentoo', 'system-arch-dracut')):
+if any(mod in stiefelmodules for mod in (
+        'system-gentoo',
+        'system-arch-dracut',
+        'system-arch',
+        'system-debian',
+)):
     # dracut nbd & network invocation from man dracut.cmdline:
     # netroot=nbd:srv:export[:fstype[:rootflags(fsflags)[:nbdopts]]]
     # pls sync with test-qemu
@@ -230,7 +230,7 @@ elif any(mod in stiefelmodules for mod in ('system-gentoo', 'system-arch-dracut'
         inner_cmdline +
         " ifname=stiefellink:" + CLIENT_INTERFACE_MAC +
         " ip=stiefellink:link6" +
-        " netroot=nbd:[" + SERVER.replace(SERVER_INTERFACE, "stiefellink") + "]:stiefelblock:::-persist"
+        " netroot=nbd:[fe80::1%wgstiefel]:stiefelblock:::-persist"
     )
 else:
     raise Exception("with the given stiefelsystem modules, "

@@ -39,6 +39,16 @@ if 'base' in cfg.modules:
     with open('aes-key', 'rb') as keyfileobj:
         KEY = keyfileobj.read()
 
+    with open("wireguardkeys.json", "r") as wgfile:
+        wg_keys = json.loads(wgfile.read())
+        # data for server
+        server_privkey = wg_keys.get("wg_serverkey")
+        client_pubkey = wg_keys.get("wg_client")
+        # data for client
+        client_privkey = wg_keys.get("wg_clientkey")
+        server_pubkey = wg_keys.get("wg_server")
+
+
     stiefel_config = {
         'aes-key-hash': hashlib.sha256(KEY).hexdigest(),
         'hmac-key': hashlib.sha256(b'autokexec-reboot/' + KEY).hexdigest(),
@@ -84,7 +94,7 @@ if 'system-arch' in cfg.modules:
     edit.edit_bash_list('MODULES', changes)
     changes = {'autodetect': 'remove'}
     if 'nbd' in cfg.modules:
-        changes['nbd'] = 'before-fsck'
+        changes['stiefel'] = 'before-fsck'
     edit.edit_bash_list('HOOKS', changes)
     edit.write()
 
@@ -97,17 +107,21 @@ if 'system-arch' in cfg.modules:
 
     # what kernel and initrd is then transferred and kexecd on the stiefel-client
     boot_config = {
-        "kernel": "vmlinuz-linux",
-        "initrd": "initramfs-stiefel.img",
-        # TODO: cmdline config option is required now!
+        "kernel": cfg.boot.kernel,
+        "initrd": cfg.boot.initrd,
+        "cmdline": cfg.boot.cmdline,
         "stiefelmodules": list(cfg.modules.keys()),
+        "wg_serverkey": server_privkey,
+        "wg_server": server_pubkey,
+        "wg_clientkey": client_privkey,
+        "wg_client": client_pubkey,
     }
     edit = FileEditor('/boot/stiefelsystem.json')
     edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
     edit.write()
 
     if 'nbd' in cfg.modules:
-        install_folder('overlays/server-os-arch-nbd')
+        install_folder('overlays/server-os-arch-mkinitcpio')
 
     command('mkinitcpio', '-p', 'linux')
 
@@ -124,6 +138,10 @@ elif any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
         "initrd": cfg.boot.initrd,
         "cmdline": cfg.boot.cmdline,
         "stiefelmodules": list(cfg.modules.keys()),
+        "wg_serverkey": server_privkey,
+        "wg_server": server_pubkey,
+        "wg_clientkey": client_privkey,
+        "wg_client": client_pubkey,
     }
     edit = FileEditor('/boot/stiefelsystem.json')
     edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')

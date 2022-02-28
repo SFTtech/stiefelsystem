@@ -3,7 +3,7 @@
 ## Dependencies
 
 ```
-pacman -S debootstrap kexec-tools dosfstools nbd pigz pv python-pyudev python-yaml syslinux wireless_tools mtools gdisk
+pacman -S debootstrap kexec-tools dosfstools nbd pigz pv python-pyudev python-yaml syslinux wireless_tools mtools gdisk wireguard-tools
 ```
 
 Only required for debugging with `test-qemu`:

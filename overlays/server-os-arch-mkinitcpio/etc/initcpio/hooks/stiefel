@@ -1,40 +1,11 @@
 #!/bin/sh
-PREREQ=""
-prereqs()
-{
-	echo "$PREREQ"
-}
 
-case $1 in
-prereqs)
-	prereqs
-	exit 0
-	;;
-esac
+# ifname=stiefellink:MAC ip=stiefellink:link6 
+# wg_privkey=privatekey wg_endpoint=server:port wg_pubkey=pubkey
+# [root=*] netroot=nbd:srv:port/exportname[:fstype[:rootflags[:nbdopts]]]
 
-case "$(cat /proc/cmdline)" in
-  *stiefel_link*)
-	echo "we are beeing stiefeled"
-
-	for x in $(cat /proc/cmdline); do
-		case "$x" in
-			ifname=*)
-			  MAC=${ifname#stiefellink:}
-			  ;;
-			wg_privkey=*)
-			  wg_privkey=${x#wg_privkey}
-			  ;;
-			wg_endpoint=*)
-			  wg_endpoint=${x#wg_endpoint}
-			  ;;
-			wg_pubkey=*)
-			  wg_pubkey=${x#wg_pubkey}
-			  ;;
-      netroot=*)
-			  netroot=${x#netroot}
-        ;;
-		esac
-	done
+run_hook() {
+	MAC=${ifname#stiefellink:}
 
 	nroot=${netroot#nbd:}
 
@@ -68,14 +39,17 @@ case "$(cat /proc/cmdline)" in
 	wgserver=${wgserver%%]:*}
 	wgport=${wg_endpoint##*:}
 
+	if ! [ "$nbdport" -gt 0 ] 2> /dev/null; then
+		nbdport="-name $nbdport"
+	fi
 
 	echo 'waiting for ethernet device'
 
-  i=0
+	i=0
 	while [ $i -lt 1000 ]; do
 		# attempt to rename. the command gives no feedback :(
 		echo "stiefellink mac $MAC" | ifrename -c -
-
+		
 		if [ -e /sys/class/net/stiefellink ]; then
 			break
 		fi
@@ -86,7 +60,7 @@ case "$(cat /proc/cmdline)" in
 	ip link set up stiefellink
 
 	echo "waiting for server to be reachable"
-
+	
 	i=0
 	while [ $i -lt 500 ]; do
 		if ping -w1 -c1 $wgserver; then
@@ -111,7 +85,7 @@ case "$(cat /proc/cmdline)" in
 	ip a
 
 	echo "waiting for server to be reachable"
-
+	
 	i=0
 	while [ $i -lt 30 ]; do
 		if ping -w1 -c1 $nbdserver; then
@@ -121,11 +95,10 @@ case "$(cat /proc/cmdline)" in
 		i=$(($i+1))
 	done
 
-	echo "modprobe nbd"
+	msg "modprobe nbd"
 	modprobe nbd
-	echo "nbd-client $nbdserver /dev/nbd0 -systemd-mark -persist $nbdport $nbdflags"
+	msg "nbd-client $nbdserver /dev/nbd0 -systemd-mark -persist $nbdport $nbdflags"
 	nbd-client "$nbdserver" /dev/nbd0 -systemd-mark -persist $nbdport $nbdflags
-	echo "nbd mount done"
+	msg "nbd mount done"
 	blkid
-  ;;
-esac
+}

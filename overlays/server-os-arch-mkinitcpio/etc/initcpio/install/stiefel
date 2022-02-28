@@ -1,0 +1,30 @@
+
+#!/bin/bash
+
+build() {
+    add_module nbd
+	add_module wireguard
+    add_checked_modules "/drivers/net"
+    add_binary nbd-client 
+	add_binary wg
+    add_runscript
+}
+
+help() {
+    cat<<HELPEOF
+Part of this module uses part of the syntax of the dracut network module,
+not the syntax of the net or nbd module of mkinitcpio.
+
+Kernel Parameters:
+ifname=stiefellink:MAC
+ip=stiefellink:link6
+wg_privkey=PRIVATEKEY
+wg_endpoint=SERVER:PORT
+wg_pubkey=ENDPOINT_PUBLICKEY
+[root=*]
+netroot=nbd:SRV:EXPORTNAME[:fstype[:rootflags[:nbdopts]]]
+This hook should be added to your /etc/mkinitcpio.conf somewhere like this
+
+HOOKS="base udev stiefel keyboard keymap encrypt filesystems"
+HELPEOF
+}
