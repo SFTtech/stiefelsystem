@@ -91,6 +91,11 @@ while [ $i -lt 1000 ]; do
   i=$(($i+1))
 done
 
+if [ $i == 1000 ]; then
+  echo "Failed to setup interface"
+  exit 1
+fi
+
 ip link set up stiefellink
 
 echo "waiting for server to be reachable"
@@ -103,6 +108,11 @@ while [ $i -lt 500 ]; do
   sleep 0.1
   i=$(($i+1))
 done
+
+if [ $i == 500 ]; then
+  echo "Failed to reach wireguard server at $wgserver on port $wgport"
+  exit 1
+fi
 
 ip link add dev wgstiefel type wireguard
 
@@ -128,6 +138,11 @@ while [ $i -lt 30 ]; do
   sleep 0.1
   i=$(($i+1))
 done
+
+if [ $i == 30 ]; then
+  echo "Failed to reach nbd server at $nbdserver via wireguard"
+  exit 1
+fi
 
 echo "modprobe nbd"
 modprobe nbd
