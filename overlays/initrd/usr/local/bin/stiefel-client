@@ -228,6 +228,7 @@ if any(mod in stiefelmodules for mod in (
     # pls sync with test-qemu
     CMDLINE = (
         inner_cmdline +
+        " stiefel" +
         " ifname=stiefellink:" + CLIENT_INTERFACE_MAC +
         " ip=stiefellink:link6" +
         " netroot=nbd:[fe80::1%wgstiefel]:stiefelblock:::-persist"
