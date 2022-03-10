@@ -108,7 +108,6 @@ class AutoKexecConfig:
             self.macs = []
 
 
-
 class ServerSetupConfig:
     """
     server system setup information
@@ -171,6 +170,7 @@ def module_config(module_name):
         return module_class
     return register_module
 
+
 # see module_config().
 MODULE_CONFIG_CLASSES = {}
 
@@ -204,6 +204,7 @@ class ModuleConfigGenericURL:
 
     def apply(self, cfg):
         pass
+
 
 # load the config on module initialization
 CONFIG = Config('config.yaml')

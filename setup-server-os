@@ -31,14 +31,7 @@ except ImportError:
     raise RuntimeError("could not find pyudev") from None
 
 
-if 'base' in cfg.modules:
-    # base configuration (for all distros)
-    install_folder('overlays/server-os-generic')
-    ensure_unit_enabled('stiefel-autokexec.service')
-
-    with open('aes-key', 'rb') as keyfileobj:
-        KEY = keyfileobj.read()
-
+if 'wireguard' in cfg.modules:
     with open("wireguardkeys.json", "r") as wgfile:
         wg_keys = json.loads(wgfile.read())
         # data for server
@@ -48,6 +41,14 @@ if 'base' in cfg.modules:
         client_privkey = wg_keys.get("wg_clientkey")
         server_pubkey = wg_keys.get("wg_server")
 
+
+if 'base' in cfg.modules:
+    # base configuration (for all distros)
+    install_folder('overlays/server-os-generic')
+    ensure_unit_enabled('stiefel-autokexec.service')
+
+    with open('aes-key', 'rb') as keyfileobj:
+        KEY = keyfileobj.read()
 
     stiefel_config = {
         'aes-key-hash': hashlib.sha256(KEY).hexdigest(),
@@ -80,6 +81,26 @@ if 'base' in cfg.modules:
     edit.load_from(os.path.join(cfg.path.initrd, 'vmlinuz'))
     edit.write()
 
+    boot_config = {
+        "kernel": cfg.boot.kernel,
+        "initrd": cfg.boot.initrd,
+        "cmdline": cfg.boot.cmdline,
+        "stiefelmodules": list(cfg.modules.keys()),
+    }
+    if 'wireguard' in cfg.modules:
+        boot_config.update(
+            {
+                "wg_serverkey": server_privkey,
+                "wg_server": server_pubkey,
+                "wg_clientkey": client_privkey,
+                "wg_client": client_pubkey,
+            }
+        )
+    edit = FileEditor('/boot/stiefelsystem.json')
+    edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
+    edit.write()
+
+
 if 'system-arch' in cfg.modules:
     # create a new 'stiefel' mkinitcpio-preset
     # which will generate a regular arch-initrd
@@ -105,21 +126,6 @@ if 'system-arch' in cfg.modules:
     edit.add_or_edit_var('stiefel_options', '-c /etc/mkinitcpio-stiefel.conf -S autodetect')
     edit.write()
 
-    # what kernel and initrd is then transferred and kexecd on the stiefel-client
-    boot_config = {
-        "kernel": cfg.boot.kernel,
-        "initrd": cfg.boot.initrd,
-        "cmdline": cfg.boot.cmdline,
-        "stiefelmodules": list(cfg.modules.keys()),
-        "wg_serverkey": server_privkey,
-        "wg_server": server_pubkey,
-        "wg_clientkey": client_privkey,
-        "wg_client": client_pubkey,
-    }
-    edit = FileEditor('/boot/stiefelsystem.json')
-    edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
-    edit.write()
-
     if 'nbd' in cfg.modules:
         install_folder('overlays/server-os-arch-mkinitcpio')
 
@@ -131,22 +137,6 @@ elif 'system-debian' in cfg.modules:
         command('update-initramfs', '-u', '-k', 'all')
 
 elif any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
-    # tell stiefel-server which kernel to serve to a stiefel-client,
-    # relative to /boot
-    boot_config = {
-        "kernel": cfg.boot.kernel,
-        "initrd": cfg.boot.initrd,
-        "cmdline": cfg.boot.cmdline,
-        "stiefelmodules": list(cfg.modules.keys()),
-        "wg_serverkey": server_privkey,
-        "wg_server": server_pubkey,
-        "wg_clientkey": client_privkey,
-        "wg_client": client_pubkey,
-    }
-    edit = FileEditor('/boot/stiefelsystem.json')
-    edit.set_data(json.dumps(boot_config, indent=4).encode() + b'\n')
-    edit.write()
-
     if 'nbd' in cfg.modules:
         install_folder('overlays/server-os-dracut-nbd')
         if 'system-arch-dracut' in cfg.modules:

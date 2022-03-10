@@ -68,20 +68,20 @@ def find_boot_config():
         'initrd': None,
         'cmdline': None,
         'stiefelmodules': None,
-        'wg_serverkey': None,
-        'wg_server': None,
-        'wg_client': None,
-        'wg_clientkey': None,
+        'wg': None,
     }
 
     if stiefelsystem_config is not None:
         stiefelsystem_config_json = json.loads(stiefelsystem_config)
         ret['cmdline'] = " ".join(stiefelsystem_config_json['cmdline']).encode('utf-8')
         ret['stiefelmodules'] = " ".join(stiefelsystem_config_json['stiefelmodules']).encode('utf-8')
-        ret['wg_server'] = stiefelsystem_config_json['wg_server']
-        ret['wg_client'] = stiefelsystem_config_json['wg_client']
-        ret['wg_serverkey'] = stiefelsystem_config_json['wg_serverkey']
-        ret['wg_clientkey'] = stiefelsystem_config_json['wg_clientkey']
+        if 'wg_server' in stiefelsystem_config_json:
+            wg = dict()
+            wg['wg_server'] = stiefelsystem_config_json['wg_server']
+            wg['wg_client'] = stiefelsystem_config_json['wg_client']
+            wg['wg_serverkey'] = stiefelsystem_config_json['wg_serverkey']
+            wg['wg_clientkey'] = stiefelsystem_config_json['wg_clientkey']
+            ret['wg'] = wg
 
         kerneldef = stiefelsystem_config_json.get('kernel')
         while kerneldef.startswith("/"):
@@ -127,7 +127,7 @@ def find_boot_config():
             ret['cmdline'] = os.path.join(files_path, kernelcmd.group(2))
 
     for k, v in ret.items():
-        if not v:
+        if not v and not k == 'wg':
             raise Exception(f'no configuration found for {k!r}')
 
     if args.add_cmd:
@@ -282,22 +282,26 @@ copyonwrite = false
 
 def setup_wireguard(config):
     subprocess.check_call(['ip', 'link', 'add', 'wgstiefelserver', 'type', 'wireguard'])
-    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg_serverkey"]})'])
-    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'peer', config["wg_client"], 'allowed-ips', 'fe80::/64'])
+    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg"]["wg_serverkey"]})'])
+    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'peer', config["wg"]["wg_client"], 'allowed-ips', 'fe80::/64'])
     subprocess.check_call(['ip', 'link', 'set', 'wgstiefelserver', 'up'])
     subprocess.check_call(['ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver'])
 
 
-if args.no_wg:
-    config = find_boot_config()
-    print("THIS WOULD BE RUN WITHOUT --no-wg")
-    print('ip', 'link', 'add', 'wgstiefelserver', 'type', 'wireguard')
-    print('wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg_serverkey"]})')
-    print('wg', 'set', 'wgstiefelserver', 'peer', config["wg_client"], 'allowed-ips', 'fe80::/64')
-    print('ip', 'link', 'set', 'wgstiefelserver', 'up')
-    print('ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver')
+config = find_boot_config()
+if config['wg']:
+
+    if args.no_wg:
+        print("THIS WOULD BE RUN WITHOUT --no-wg")
+        print('ip', 'link', 'add', 'wgstiefelserver', 'type', 'wireguard')
+        print('wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg"]["wg_serverkey"]})')
+        print('wg', 'set', 'wgstiefelserver', 'peer', config["wg"]["wg_client"], 'allowed-ips', 'fe80::/64')
+        print('ip', 'link', 'set', 'wgstiefelserver', 'up')
+        print('ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver')
+    else:
+        setup_wireguard(config)
 else:
-    setup_wireguard(find_boot_config())
+    print("No wireguard config found")
 
 if args.no_nbd:
     print("NBD config file is not written.\n Content would be:")
@@ -401,15 +405,16 @@ async def generate_boot_tar(payload):
             tar.addfile(tf, io.BytesIO(stiefelmodulelist))
 
             # wg stuff
-            wg_server = bootcfg['wg_server'].encode('utf-8')
-            tf = tarfile.TarInfo('wg_server')
-            tf.size = len(wg_server)
-            tar.addfile(tf, io.BytesIO(wg_server))
+            if bootcfg['wg']:
+                wg_server = bootcfg['wg']['wg_server'].encode('utf-8')
+                tf = tarfile.TarInfo('wg_server')
+                tf.size = len(wg_server)
+                tar.addfile(tf, io.BytesIO(wg_server))
 
-            wg_clients = bootcfg['wg_clientkey'].encode('utf-8')
-            tf = tarfile.TarInfo('wg_clientkey')
-            tf.size = len(wg_clients)
-            tar.addfile(tf, io.BytesIO(wg_clients))
+                wg_clients = bootcfg['wg']['wg_clientkey'].encode('utf-8')
+                tf = tarfile.TarInfo('wg_clientkey')
+                tf.size = len(wg_clients)
+                tar.addfile(tf, io.BytesIO(wg_clients))
 
         fileobj.seek(0)
         return fileobj.read()

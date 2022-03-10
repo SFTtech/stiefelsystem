@@ -18,9 +18,9 @@ not the syntax of the net or nbd module of mkinitcpio.
 Kernel Parameters:
 ifname=stiefellink:MAC
 ip=stiefellink:link6
-wg_privkey=PRIVATEKEY
-wg_endpoint=SERVER:PORT
-wg_pubkey=ENDPOINT_PUBLICKEY
+wg.privkey=PRIVATEKEY
+wg.endpoint=SERVER:PORT
+wg.pubkey=ENDPOINT_PUBLICKEY
 [root=*]
 netroot=nbd:SRV:EXPORTNAME[:fstype[:rootflags[:nbdopts]]]
 This hook should be added to your /etc/mkinitcpio.conf somewhere like this

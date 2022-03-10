@@ -1,4 +1,8 @@
 #!/bin/sh
+# ifname=stiefellink:MAC ip=stiefellink:link6
+# wg.privkey=privatekey wg.endpoint=server:port wg.pubkey=pubkey
+# [root=*] netroot=nbd:srv:port/exportname[:fstype[:rootflags[:nbdopts]]]
+
 PREREQ=""
 prereqs()
 {
@@ -11,6 +15,46 @@ prereqs)
 	exit 0
 	;;
 esac
+
+setup_wireguard() {
+  wgendpoint=$1
+  wgpubkey=$2
+  wgprivkey=$3
+
+  wgserver=${wgendpoint#[}
+  wgserver=${wgserver%%]:*}
+  wgport=${wg_endpoint##*:}
+
+  i=0
+  while [ $i -lt 500 ]; do
+    if ping -w1 -c1 "$wgserver"; then
+      break
+    fi
+    sleep 0.1
+    i=$((i+1))
+  done
+  if [ $i -eq 500 ]; then
+    echo "Failed to reach wireguard server at $wgserver on port $wgport"
+    exit 1
+  fi
+
+  ip link add dev wgstiefel type wireguard
+
+  if [ -f /etc/wireguard/stiefel.conf ]; then
+    wg setconf wgstiefel /etc/wireguard/wgstiefel.conf
+  else
+    echo "$wgprivkey" > /privkey
+    wg set wgstiefel private-key /privkey
+    wg set wgstiefel peer "$wgpubkey" allowed-ips fe80::/64 endpoint "$wgendpoint"
+  fi
+
+  ip addr add fe80::2/64 dev wgstiefel
+  ip link set wgstiefel up
+  ip a
+
+  echo "waiting for server to be reachable"
+}
+
 
 case "$(cat /proc/cmdline)" in
   *stiefel*)
@@ -26,14 +70,14 @@ for x in $(cat /proc/cmdline); do
     ifname=*)
       MAC=${x#ifname=stiefellink:}
       ;;
-    wg_privkey=*)
-      wg_privkey=${x#wg_privkey=}
+    wg.privkey=*)
+      wg_privkey=${x#wg.privkey=}
       ;;
-    wg_endpoint=*)
-      wg_endpoint=${x#wg_endpoint=}
+    wg.endpoint=*)
+      wg.endpoint=${x#wg.endpoint=}
       ;;
-    wg_pubkey=*)
-      wg_pubkey=${x#wg_pubkey=}
+    wg.pubkey=*)
+      wg_pubkey=${x#wg.pubkey=}
       ;;
     netroot=*)
       netroot=${x#netroot=}
@@ -69,10 +113,6 @@ if [ "$nbdfstype" = "$nbdport" ]; then
     unset nbdfstype
 fi
 
-wgserver=${wg_endpoint#[}
-wgserver=${wgserver%%]:*}
-wgport=${wg_endpoint##*:}
-
 if ! [ "$nbdport" -gt 0 ] 2> /dev/null; then
   nbdport="-name $nbdport"
 fi
@@ -88,10 +128,10 @@ while [ $i -lt 1000 ]; do
     break
   fi
   sleep 0.05
-  i=$(($i+1))
+  i=$((i+1))
 done
 
-if [ $i == 1000 ]; then
+if [ $i -eq 1000 ]; then
   echo "Failed to setup interface"
   exit 1
 fi
@@ -100,46 +140,20 @@ ip link set up stiefellink
 
 echo "waiting for server to be reachable"
 
-i=0
-while [ $i -lt 500 ]; do
-  if ping -w1 -c1 $wgserver; then
-    break
-  fi
-  sleep 0.1
-  i=$(($i+1))
-done
-
-if [ $i == 500 ]; then
-  echo "Failed to reach wireguard server at $wgserver on port $wgport"
-  exit 1
+if [ -n "$wg_endpoint" ] && [ -n "$wg_pubkey" ] && [ -n "$wg_privkey" ]; then
+  setup_wireguard "$wg_endpoint" "$wg_pubkey" "$wg_privkey"
 fi
-
-ip link add dev wgstiefel type wireguard
-
-if [ -f /etc/wireguard/stiefel.conf ]; then
-  wg setconf wgstiefel /etc/wireguard/wgstiefel.conf
-else
-  echo "$wg_privkey" > /privkey
-  wg set wgstiefel private-key /privkey
-  wg set wgstiefel peer "$wg_pubkey" allowed-ips fe80::/64 endpoint "$wg_endpoint"
-fi
-
-ip addr add fe80::2/64 dev wgstiefel
-ip link set wgstiefel up
-ip a
-
-echo "waiting for server to be reachable"
 
 i=0
 while [ $i -lt 30 ]; do
-  if ping -w1 -c1 $nbdserver; then
+  if ping -w1 -c1 "$nbdserver"; then
     break
   fi
   sleep 0.1
-  i=$(($i+1))
+  i=$((i+1))
 done
 
-if [ $i == 30 ]; then
+if [ $i -eq 30 ]; then
   echo "Failed to reach nbd server at $nbdserver via wireguard"
   exit 1
 fi
