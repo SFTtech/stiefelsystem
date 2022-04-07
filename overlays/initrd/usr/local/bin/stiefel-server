@@ -288,7 +288,14 @@ def setup_wireguard(config):
     subprocess.check_call(['ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver'])
 
 
-config = find_boot_config()
+try:
+    if not standalone:
+        subprocess.check_call(['mount', '-oro', BOOTPART, files_path])
+    config = find_boot_config()
+finally:
+    if not standalone:
+        subprocess.check_call(['umount', files_path])
+
 if config['wg']:
 
     if args.no_wg:
