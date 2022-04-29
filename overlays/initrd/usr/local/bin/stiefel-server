@@ -282,7 +282,7 @@ copyonwrite = false
 
 def setup_wireguard(config):
     subprocess.check_call(['ip', 'link', 'add', 'wgstiefelserver', 'type', 'wireguard'])
-    subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'private-key', f'<(echo {config["wg"]["wg_serverkey"]})'])
+    subprocess.run(['wg', 'set', 'wgstiefelserver', 'private-key', '/dev/stdin'], input=config["wg"]["wg_serverkey"].encode('utf-8'), check=True)
     subprocess.check_call(['wg', 'set', 'wgstiefelserver', 'peer', config["wg"]["wg_client"], 'allowed-ips', 'fe80::/64'])
     subprocess.check_call(['ip', 'link', 'set', 'wgstiefelserver', 'up'])
     subprocess.check_call(['ip', 'addr', 'add', 'fe80::1/64', 'dev', 'wgstiefelserver'])
