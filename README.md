@@ -63,6 +63,8 @@ v    |              discovery message             |
      |                                    kexec to received kernel
      |                               and network-root compatible initramfs
   serve root block device                         |
+     |             connect wireguard              |
+     |<---------------------<---------------------+
      |             map/mount root fs              |
      |<---------------------<---------------------+
      |                                            |

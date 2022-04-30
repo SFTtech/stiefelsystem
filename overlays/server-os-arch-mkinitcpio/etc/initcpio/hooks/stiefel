@@ -3,19 +3,6 @@
 # wg.privkey=privatekey wg.endpoint=server:port wg.pubkey=pubkey
 # [root=*] netroot=nbd:srv:port/exportname[:fstype[:rootflags[:nbdopts]]]
 
-PREREQ=""
-prereqs()
-{
-	echo "$PREREQ"
-}
-
-case $1 in
-prereqs)
-	prereqs
-	exit 0
-	;;
-esac
-
 setup_wireguard() {
   wgendpoint=$1
   wgpubkey=$2
@@ -55,6 +42,7 @@ setup_wireguard() {
   echo "waiting for server to be reachable"
 }
 
+run_hook() {
 
 case "$(cat /proc/cmdline)" in
   *stiefel*)
@@ -74,7 +62,7 @@ for x in $(cat /proc/cmdline); do
       wg_privkey=${x#wg.privkey=}
       ;;
     wg.endpoint=*)
-      wg.endpoint=${x#wg.endpoint=}
+      wg_endpoint=${x#wg.endpoint=}
       ;;
     wg.pubkey=*)
       wg_pubkey=${x#wg.pubkey=}
@@ -164,3 +152,4 @@ echo "nbd-client $nbdserver /dev/nbd0 -systemd-mark -persist $nbdport $nbdflags"
 nbd-client "$nbdserver" /dev/nbd0 -systemd-mark -persist $nbdport $nbdflags
 echo "nbd mount done"
 blkid
+}

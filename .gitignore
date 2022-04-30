@@ -1,6 +1,7 @@
 /cache
 /workdir
 /aes-key
+/wireguardkeys.json
 /config.yaml
 __pycache__
 .*.swp

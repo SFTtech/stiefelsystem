@@ -6,6 +6,8 @@ modules:
     # never disable those core components:
     - base
     - nbd
+    # disabling this forces force plain text communication (DON'T DO IT)
+    - wireguard
     ###########################################################################
     # select one of the following systems:
     # support for arch linux payload systems (mkinitcpio)
