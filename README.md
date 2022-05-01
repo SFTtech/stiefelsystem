@@ -1,46 +1,31 @@
-# What?
+# Stiefelsystem
 
-Allows you to boot your (or anyone's really) desktop PC with the exact same
-hard disk that your laptop is running from, basically exactly as if you'd
-unscrew the SSD from your laptop and plug it into the desktop.
+The *Stiefelsystem* allows you to use your computer as a **bootable** storage device **for another computer**, you just need a **network connection** between both.
 
-The data transfer to the hard disk goes over a network link.
+For proper functionality your system has to be compatible with both devices seamlessly, hence this tool is optimized for **Linux**.
 
-# Why?
+Unfortunately, it takes longer than 3 seconds to unscrew the SSD of a Laptop and connect it to the desktop PC, so we wrote this software :smile_cat:
 
-I don't like maintaining multiple operating systems and associated home
-folders.
+Needed components:
+- A computer serving a storage device to to boot from
+- Another computer whose CPU/GPU you actually want to use
+- A network connection between both
+- A USB stick to bootstrap your other computer's startup (no PXE yet)
 
-On the other hand, I like being able to simply use the comfort and power of a
-desktop PC if I encounter one.
 
-Unfortunately, on my laptop it takes longer than 3 seconds to unscrew the SSD,
-so I wrote this.
+## How?
 
-# How?
+Instead of unscrewing your SSD of a Laptop and putting it in a Desktop computer to start it there, the *Stiefelsystem* boots up the same system over network while fetching/storing all system files from the Laptop.
+You can of course still access an additional storage device in the Desktop computer.
 
-The laptop acts as the server.
-It first provides the initrd/kernel via HTTP,
-and then the entire block device for its main disk via NBD.
-A dedicated high-speed network link is recommended for this (henceforth referred to as: stiefellink).
+To make this work, the "server system" (your Laptop) provides the operating system kernel and base system over the network to the "client system" (your Desktop computer).
+The base system on the client then connects to the server again and maps the whole storage device (the SSD, mapped with NBD), and then uses it as root filesystem.
 
-I'm using a RTL8156-based 10/100/1G/2.5G USB3.2 NIC on both sides, in a point-to-point topology.
-The OS cannot be running on the laptop while it serves the disk, for obvious reasons.
-Thus, when the stiefellink NIC is detected by the stiefel-autokexec service, the laptop reboots into
-a custom ramdisk which acts as the stiefelsystem server that provides the aforementioned services.
-Configuration (IP addresses, block device identifiers, ...) is passed to this server through its kernel cmdline.
-The stiefelsystem server will set up the network on stiefellink and wait for requests.
+Of course this works between any two devices.
 
-On the desktop PC, a minimal stiefelsystem client ramdisk is booted from a USB flash drive;
-again, the configuration comes from the kernel cmdline.
-Apart from the cmdline, the ramdisk is actually identical to the server ramdisk.
-The steifelsystem client will search for the server on all of its network interfaces until it receives
-a correct reply. Once it does, it requests the kernel and initrd that it shall boot, and kexec's into them.
-The target system will use a nbd hook in its own initrd to mount the root partition, then boot as usual.
 
-Authentication, encryption and MITM protection happens through a shared symmetric key and AES-EAX.
-Your nbd connection itself is unencrypted and unauthenticated, so I strongly recommend a
-point-to-point connection and not enabling IP forwarding.
+## Communication Flow
+
 
 ```
 time
@@ -71,6 +56,9 @@ v    |              discovery message             |
      |<---------------------<---------------------+
      v                                            v
 ```
+
+More information can be found in our [more detailed documentation](doc/procedure.md).
+
 
 # How to?
 
@@ -113,16 +101,17 @@ The scripts in this repo automate all of those task (apart from the thinking...)
 
 # Why don't you use X in the tech stack?
 
-I tried X and it sucks.
+We tried X and it sucks.
 
 (for some values of X, including but not limited to:)
 
 - iSCSI (super-slow compared to `nbd`, and overly complicated)
-- PXE (doesn't support my 2.5GBaseT USB NIC)
+- PXE (unreliable, USB sticks worked better, but we may revisit :)
 
 # Why don't you use Y in the tech stack?
 
 We'd really like to use Y, but you haven't implemented support yet.
+
 
 # Things to improve
 
