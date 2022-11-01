@@ -1,7 +1,6 @@
 #!/bin/sh
 PREREQ=""
-prereqs()
-{
+prereqs() {
      echo "$PREREQ"
 }
 

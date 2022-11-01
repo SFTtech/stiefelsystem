@@ -1,0 +1,9 @@
+[Unit]
+Description=Serve disks via Stiefelsystem
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/stiefelctl server
+
+[Install]
+WantedBy=multi-user.target

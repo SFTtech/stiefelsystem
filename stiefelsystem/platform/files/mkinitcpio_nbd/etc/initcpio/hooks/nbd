@@ -1,3 +1,5 @@
+#!/bin/sh
+
 run_hook() {
 	echo 'waiting for ethernet device'
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Autostart StiefelOS when client seeks this server
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/stiefelctl autolaunch-stiefelos
+
+[Install]
+WantedBy=multi-user.target
