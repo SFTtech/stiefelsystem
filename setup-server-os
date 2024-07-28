@@ -13,6 +13,7 @@ from util import (
     command,
     ensure_root,
     ensure_unit_enabled,
+    restart_unit,
     FileEditor,
     install_folder,
 )
@@ -57,7 +58,10 @@ if 'base' in cfg.modules:
     # TODO: rename to autokexec config
     edit = FileEditor('/etc/stiefelsystem/config.json')
     edit.set_data(json.dumps(stiefel_config, indent=4).encode() + b'\n')
-    edit.write()
+    kexecd_config_changed = edit.write()
+
+    if kexecd_config_changed:
+        restart_unit('stiefel-autokexec.service')
 
     # copy the special stiefelsystem initrd to its final location
     # it will be used for autokexec on the server
