@@ -99,7 +99,7 @@ if 'system-arch' in cfg.modules:
     boot_config = {
         "kernel": "vmlinuz-linux",
         "initrd": "initramfs-stiefel.img",
-        # TODO: cmdline config option is required now!
+        "cmdline": cfg.boot.cmdline,
         "stiefelmodules": list(cfg.modules.keys()),
     }
     edit = FileEditor('/boot/stiefelsystem.json')
