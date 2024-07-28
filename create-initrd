@@ -29,7 +29,7 @@ args = cli.parse_args()
 
 # Some random sanity checks
 selected_system_modules = sum(
-    [mod in ('system-gentoo', 'system-arch', 'system-arch-dracut', 'system-gentoo') for mod in cfg.modules])
+    [mod in ('system-debian', 'system-arch', 'system-arch-dracut', 'system-gentoo') for mod in cfg.modules])
 
 if selected_system_modules != 1:
     warn("Please select exactly one system-* module")
