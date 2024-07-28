@@ -43,7 +43,7 @@ if 'base' in cfg.modules:
         'aes-key-hash': hashlib.sha256(KEY).hexdigest(),
         'hmac-key': hashlib.sha256(b'autokexec-reboot/' + KEY).hexdigest(),
         "autokexec-triggers": {
-            "mac_detectoion": cfg.autokexec.macs,
+            "mac_detection": cfg.autokexec.macs,
             "broadcast": cfg.autokexec.broadcast,
             "adapters": cfg.autokexec.macs,
         },
