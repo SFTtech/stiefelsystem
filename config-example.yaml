@@ -121,7 +121,7 @@ initrd:
             # dpkg is unfortunately required for /sbin/start-stop-daemon
             - apt
             - debconf
-            - libapt-pkg5.0:amd64
+            - libapt-pkg6.0:amd64
             - libdebconfclient0:amd64
             # yay! our system is perl-free!
             - perl-base
@@ -214,6 +214,6 @@ module-configs:
             - xxd
             - xz-utils
     r8152:
-        url: https://github.com/wget/realtek-r8152-linux/archive/v2.13.tar.gz
+        url: https://github.com/wget/realtek-r8152-linux/archive/refs/tags/v2.16.3.20221209.tar.gz
     clevo-fancontrol:
         url: https://github.com/mic-e/clevo-fancontrol/archive/1.0.tar.gz
