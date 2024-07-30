@@ -2,6 +2,7 @@
 Utilities for use by the various scripts.
 """
 import io
+import logging
 import multiprocessing
 import os
 import pathlib
@@ -13,7 +14,30 @@ import tarfile
 import traceback
 import urllib.request
 
-from config import CONFIG as cfg
+
+def log_setup(setting, default=1):
+    """
+    Perform setup for the logger.
+    Run before any logging.log thingy is called.
+
+    if setting is 0: the default is used, which is WARNING.
+    else: setting + default is used.
+    """
+
+    levels = (logging.ERROR, logging.WARNING, logging.INFO,
+              logging.DEBUG, logging.NOTSET)
+
+    factor = clamp(default + setting, 0, len(levels) - 1)
+    level = levels[factor]
+
+    logging.basicConfig(level=level, format="[%(asctime)s] %(message)s")
+    logging.error("loglevel: %s", logging.getLevelName(level))
+    logging.captureWarnings(True)
+
+
+def clamp(number, smallest, largest):
+    """ return number but limit it to the inclusive given value range """
+    return max(smallest, min(number, largest))
 
 
 def warn(message):
@@ -102,7 +126,7 @@ def command(*cmd, silent=False, nspawn=None, shell=False, confirm=False,
             print("\x1b[33;1mwill run:\x1b[m", end=" ")
         else:
             print("\x1b[32;1m$\x1b[m", end=" ")
-        print(" ".join(shlex.quote(part) for part in cmd))
+        print(" ".join(shlex.quote(str(part)) for part in cmd))
         if confirm:
             if not get_consent():
                 return
@@ -125,10 +149,12 @@ def command(*cmd, silent=False, nspawn=None, shell=False, confirm=False,
         return stdout
 
 
-def initrd_write(path, *lines, content=None, append=False):
+def initrd_write(basedir, path, *lines, content=None, append=False):
     """
     Writes a file in the initrd.
 
+    @param basedir
+        path to the initrd fs root
     @param path
         must be an absolute string (starting with '/').
     @param lines
@@ -163,7 +189,7 @@ def initrd_write(path, *lines, content=None, append=False):
         mode = 'wb'
 
     print('\x1b[33;1m' + mode + '\x1b[m ' + path)
-    with open(cfg.path.initrd + path, mode) as fileobj:
+    with open(basedir + path, mode) as fileobj:
         fileobj.write(content)
 
 
@@ -386,7 +412,7 @@ class FileEditor:
 
     def add_or_edit_var(self, varname, value, add_prefix=''):
         """
-        edits or creates a bash variable assignment such as foo="asdf"
+        edits or creates a bash variable assignment such as foo="rolf"
         """
         match = re.search(fr'\n{varname}="(.*?)"'.encode(), self.data)
         if match is None:
@@ -417,7 +443,7 @@ def install_folder(source, dest="/"):
         else:
             print(f'skipping install of {source!r} to {dest!r}')
             return
-        
+
     for entry in os.listdir(source):
         source_path = os.path.join(source, entry)
         dest_path = os.path.join(dest, entry)
@@ -570,3 +596,17 @@ def mac_to_v6ll(mac):
     low0 = mac_nr >> 16 & 0xff
 
     return f'fe80::{high1:04x}:{high0:02x}ff:fe{low0:02x}:{low1:04x}'
+
+
+def ensure_single_system(cfg):
+    """
+    verify there's exactly one system-* module enabled.
+    it determines the distro we operate for.
+    """
+    selected_system_modules = sum(
+        [1 if mod.startswith('system-') else 0
+            for mod in cfg.modules])
+
+    if selected_system_modules != 1:
+        warn("Please select exactly one system-* module")
+        raise SystemExit(1)

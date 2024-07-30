@@ -5,9 +5,12 @@ Loads the config from config.yaml when imported.
 
 See config-example.yaml for an example configuration.
 """
+import logging
 import os
 
 import yaml
+
+from pathlib import Path
 
 
 def ensure_bool(obj):
@@ -47,28 +50,56 @@ class Config:
     Global configuration object; contains sub-objects for the various
     configurable aspects.
     """
-    def __init__(self, filename):
-        with open(filename) as config_fileobj:
-            raw = yaml.load(config_fileobj, Loader=yaml.SafeLoader)
+    module_config_classes = dict()
+
+    def __init__(self, cfgfilename, system_mode=False):
+        # whether stiefelsystem runs in its repo or is installed system-wide
+        self.system_mode = system_mode
+
+        logging.info("reading config file %s...", cfgfilename)
+
+        with open(cfgfilename) as config_fileobj:
+            raw = yaml.safe_load(config_fileobj)
+
+        stiefel_cfg = raw['stiefelsystem']
 
         self.mod_config = {}
-        for module, module_raw in raw['module-configs'].items():
-            self.mod_config[module] = MODULE_CONFIG_CLASSES[module](module_raw)
+        for module, module_raw in stiefel_cfg['module-configs'].items():
+            logging.debug(f"processing module config for {module!r}")
+            self.mod_config[module] = self.module_config_classes[module](module_raw)
 
         self.modules = {}
-        for module in ensure_stringlist(raw['modules']):
+        for module in ensure_stringlist(stiefel_cfg['modules']):
             self.modules[module] = self.mod_config.get(module)
+
 
         self.boot = BootConfig(raw['boot'])
         self.autokexec = AutoKexecConfig(raw['autokexec'])
         self.server_setup = ServerSetupConfig(raw['server-setup'])
         self.initrd = InitRDConfig(raw['initrd'])
         self.packing = PackingConfig(raw['initrd']['packing'])
-        self.path = PathConfig(raw['paths'])
+        self.path = PathConfig(stiefel_cfg['paths'])
+
+        self.aes_key_location = self.path.state / "aes-key"
 
         for mod_config in self.modules.values():
             if mod_config:
                 mod_config.apply(self)
+
+    @classmethod
+    def module_config(cls, module_name):
+        """
+        Decorator function to be used with module configs
+        Enters the class into `module_config_classes`
+
+        Module config classes must provide an 'apply' method which will be
+        automatically called after the config has finished parsing,
+        if the module is enabled. It will be passed the config as an argument.
+        """
+        def register_module(module_class):
+            cls.module_config_classes[module_name] = module_class
+            return module_class
+        return register_module
 
 
 class BootConfig:
@@ -90,9 +121,9 @@ class BootConfig:
         else:
             raise ValueError(f"unknown boot disk method {self.method!r}")
 
-        self.kernel = ensure_string(raw['load']['kernel'])
-        self.initrd = ensure_string(raw['load']['initrd'])
-        self.cmdline = ensure_stringlist(raw['load']['cmdline'])
+        self.kernel = ensure_string(raw['kernel'])
+        self.initrd = ensure_string(raw['initrd'])
+        self.cmdline = ensure_stringlist(raw['cmdline'])
 
 
 class AutoKexecConfig:
@@ -108,14 +139,13 @@ class AutoKexecConfig:
             self.macs = []
 
 
-
 class ServerSetupConfig:
     """
     server system setup information
     """
     def __init__(self, raw):
-        self.stiefelsystem_kernel = ensure_string(raw['stiefelsystem-kernel'])
-        self.stiefelsystem_initrd = ensure_string(raw['stiefelsystem-initrd'])
+        self.stiefel_os_kernel = ensure_string(raw['stiefel-os-kernel'])
+        self.stiefel_os_initrd = ensure_string(raw['stiefel-os-initrd'])
         self.cmdline = ensure_stringlist(raw['cmdline'])
 
 
@@ -144,38 +174,29 @@ class PathConfig:
     The various internal paths where the scripts operate.
     """
     def __init__(self, raw):
-        self.cache = ensure_string(raw['cache'])
-        self.work = ensure_string(raw['workdir'])
+        # debootstrap downloads
+        # TODO on debianoid systems, we could share it with the system
+        #      package cache
+        self.cache = Path(ensure_string(raw['cache_dir']))
 
-        self.workpaths = {
-            key: os.path.join(self.work, ensure_string(value))
-            for key, value in raw['workdir-subpaths'].items()
-        }
+        # where the resulting initramfs is stored
+        self.state = Path(ensure_string(raw['state_dir']))
 
-        self.cpio = self.workpaths['cpio']
-        self.initrd = self.workpaths['initrd']
-        self.initrd_devel = self.workpaths['initrd-devel']
+        # workdir, we create stiefelOS in here
+        self.work = self.state / "work"
 
+        # where the system is assembled
+        self.initrd = self.work / "initrd"
 
-def module_config(module_name):
-    """
-    Decorator function to be used with module configs
-    Enters the class into MODULE_CONFIG_CLASSES
+        # overlayfs mounted over initrd, where additional development tools
+        # are installed
+        self.initrd_devel = self.work / "initrd-devel"
 
-    Module config classes must provide an 'apply' method which will be
-    automatically called after the config has finished parsing,
-    if the module is enabled. It will be passed the config as an argument.
-    """
-    def register_module(module_class):
-        MODULE_CONFIG_CLASSES[module_name] = module_class
-        return module_class
-    return register_module
-
-# see module_config().
-MODULE_CONFIG_CLASSES = {}
+        # the packed initrd directory as archive
+        self.cpio = self.work / "initrd.cpio"
 
 
-@module_config("debug")
+@Config.module_config("debug")
 class ModuleConfigDebug:
     def __init__(self, raw):
         self.better_shell = ensure_string(raw['better-shell'])
@@ -185,8 +206,10 @@ class ModuleConfigDebug:
         self.extra_packages = ensure_stringlist(raw['extra-packages'])
 
     def apply(self, cfg):
-        # modify the initrd creation and packing configuration to install more
-        # utilities, increasing the initrd usability
+        """
+        modify the initrd creation and packing configuration to install more
+        utilities, increasing the initrd usability
+        """
         cfg.initrd.include_packages.extend(self.extra_packages)
         cfg.initrd.shell = self.better_shell
         if self.dont_exclude_paths:
@@ -194,16 +217,3 @@ class ModuleConfigDebug:
         if self.dont_exclude_packages:
             cfg.packing.exclude_packages.clear()
         cfg.packing.compressor = self.faster_compressor
-
-
-@module_config("clevo-fancontrol")
-@module_config("r8152")
-class ModuleConfigGenericURL:
-    def __init__(self, raw):
-        self.url = ensure_string(raw['url'])
-
-    def apply(self, cfg):
-        pass
-
-# load the config on module initialization
-CONFIG = Config('config.yaml')

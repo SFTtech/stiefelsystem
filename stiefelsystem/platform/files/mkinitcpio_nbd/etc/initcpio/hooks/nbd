@@ -1,37 +1,48 @@
-#!/bin/sh
+#!/bin/bash
 
 run_hook() {
-	echo 'waiting for ethernet device'
+    echo 'waiting for stiefelsystem ethernet device...'
 
-	i=0
-	while [ $i -lt 1000 ]; do
-		# attempt to rename. the command gives no feedback :(
-		echo "stiefellink mac ${stiefel_link}" | ifrename -c -
-		
-		if [ -e /sys/class/net/stiefellink ]; then
-			break
-		fi
-		sleep 0.05
-		i=$(($i+1))
-	done
+    pushd /sys/class/net/
+    local i=0
+    while [ ! -d stiefellink ]; do
+        local renamed=n
+        for iface in "*"; do
+            if [ `cat "$iface/address"` == "${stiefel_link}" ]; then
+                ip link set name stiefellink dev "$iface" && { renamed=y; break; }
+            fi
+        done
+        i=$(($i+1))
+        [ $i -eq 200 ] && {
+            msg "could not find interface ${stiefel_link} :("
+            return 1
+        }
+        [ renamed == 'n' ] && sleep 0.1
+    done
+    popd
 
-	ip link set up stiefellink
+    ip link set up stiefellink
 
-	echo "waiting for server to be reachable"
-	
-	i=0
-	while [ $i -lt 500 ]; do
-		if ping -w1 -c1 ${stiefel_nbdhost}; then
-			break
-		fi
-		sleep 0.1
-		i=$(($i+1))
-	done
+    echo "waiting for stiefel-server to be reachable..."
+    i=0
+    while true; do
+        if ping -w1 -c1 ${stiefel_nbdhost}; then
+            break
+        else
+            sleep 0.1
+        fi
+        i=$(($i+1))
+        [ $i -eq 200 ] && {
+            msg "could not ping ${stiefel_nbdhost} :("
+            return 1
+        }
+    done
 
-	msg "modprobe nbd"
-	modprobe nbd
-	msg "nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}"
-	nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}
-	msg "nbd mount done"
-	blkid
+    modprobe nbd
+    msg "mapping stiefelsystem nbd..."
+    cmd=nbd-client ${stiefel_nbdhost} /dev/nbd0 -systemd-mark -persist -name ${stiefel_nbdname}
+    msg "$cmd"
+    $cmd || return 1
+    msg "stiefelsystem nbd devices mapped."
+    blkid
 }

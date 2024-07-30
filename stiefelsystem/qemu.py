@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""
+script to test the server and client in qemu.
+
+run this in two terminals.
+
+both machines will use the stiefelsystem's kernel and initrd to boot,
+and the server will serve your systems' kernel and initrd to then stiefel the client.
+
+first you need to start the server:
+
+    stiefelctl test-qemu server
+
+then, run
+
+    stiefelctl test-qemu client
+
+they should be able to talk to each other.
+the client should download the kernel and initrd from the server,
+and proceed up to `kexec`.
+"""
+
+import argparse
+import base64
+import contextlib
+import json
+import os
+import tempfile
+
+from .subcommand import Subcommand, ConfigDefault
+from .util import (
+    command,
+    ensure_root,
+    install_binary,
+    mac_to_v6ll,
+)
+
+
+class QemuTest(Subcommand):
+    """
+    Create the stiefel-client and stiefel-server initramfs image.
+    It contains all tools for running a stiefel-client or server.
+    """
+
+    @classmethod
+    def register(cls, cli):
+        cli.add_argument('--kernel',
+                         default=ConfigDefault("boot.kernel"),
+                         help=('the kernel to be provided to a stiefel-client. '
+                               'default: use the debian kernel from stiefel\'s initrd'))
+        cli.add_argument('--initrd',
+                         default=ConfigDefault("boot.initrd"),
+                         help=('the initrd to be delivered to a stiefel-client. '
+                               'default: use the debian initrd from stiefel\'s initrd'))
+        cli.add_argument('--srv-kernel',
+                         default=ConfigDefault("path.initrd", lambda cfg: f'{cfg}/vmlinuz'),
+                         help=('the kernel to booted for this stiefel-server. '
+                               'default: use debian kernel from stiefel-initrd'))
+        cli.add_argument('--srv-initrd',
+                         default=ConfigDefault("path.cpio"),
+                         help='the initrd to loaded to this stiefel-server')
+        cli.add_argument('mode', choices=['client', 'server'])
+        cli.add_argument('--cmdline',
+                         help='extra kernel cmdline args for the final system')
+        cli.add_argument('--forward-usb')
+        cli.add_argument('--print-client-kexec-invocation', action='store_true',
+                         help=("when set, get a qemu invocation to directly test "
+                               "a stiefel-client kexec run"))
+        cli.add_argument('--graphical', action='store_true')
+        cli.add_argument('--serialnetwork', action='store_true',
+                         help="attach ttyS0 to the VM, exposed as telnet tcp port")
+        cli.add_argument('--skip-confirm', action='store_true')
+        cli.add_argument('--use-existing-bridge',
+                         help="attach qemu to this existing bridge")
+        cli.add_argument('--extra-files')
+
+        cli.set_defaults(subcommand=cls)
+
+        def checkfunc(args):
+            if args.print_client_kexec_invocation and not args.mode == 'server':
+                cli.error("the client kexec invocation display only works in server mode")
+        cli.set_defaults(checkfunc=checkfunc)
+
+
+    def run(self, args, cfg):
+        """
+        create an initrd suitable for running stiefel-server or stiefel-client
+        """
+
+        ensure_root()
+
+        with contextlib.ExitStack() as exit_stack:
+            tmpdir = exit_stack.enter_context(tempfile.TemporaryDirectory())
+
+            def tmppath(name):
+                return os.path.join(tmpdir, name)
+
+            # inner_cmdline is passed to the
+            # stiefeled real system kernel by stiefel-client.
+            # they are used in addition to the options served by
+            # stiefel-server from /boot/stiefelsystem.json
+            inner_cmdline = "vga=795"
+            if not args.graphical:
+                inner_cmdline += " console=ttyS0"
+
+            client_mac = "52:54:00:5f:70:02"
+
+            bootpart_luks = None
+            bootpart_luks_uuid = None
+
+            if args.mode == 'client':
+                # client mode only works when a server is already running
+
+                # check if our test might reboot the actual device...
+                autokexec_active = command("systemctl", "is-active", "stiefel-autokexec.service",
+                                           get_retval=True)
+                if autokexec_active == 0:
+                    print("stiefel-autokexec.service is active on your computer")
+                    print("this test would thus reboot your device during testing!")
+                    print("-> please run:\nsystemctl stop stiefel-autokexec.service")
+                    exit(1)
+
+                mac = client_mac
+
+                inner_cmdline_b64 = base64.b64encode(inner_cmdline.encode('utf-8')).decode('ascii')
+
+                cmdline = [
+                    "systemd.unit=stiefel-client.service",
+                    "nomodeset",
+                    "stiefel_innercmdline=" + inner_cmdline_b64,
+                ]
+                qemu_args = ['-gdb', 'tcp::1234']
+
+                # qemu boots this kernel
+                kernel = args.srv_kernel
+                initrd = args.srv_initrd
+
+
+            elif args.mode == 'server':
+                mac = "52:54:00:5f:70:03"
+
+                with contextlib.ExitStack() as setup_exit_stack:
+
+                    # 4 GiB sparse image
+                    disk_size = 4 * 1024 ** 3
+
+                    # create the disk image that will be served to the server
+                    with open(tmppath('loop_file'), 'wb') as loop_file:
+                        loop_file.truncate(disk_size)
+
+                    # create partitions in loop file
+
+                    if 'lvm' in cfg.modules:
+                        # one gpt partition for the whole disk
+                        command('sgdisk', '-n', '0:0:0', loop_file.name)
+                    else:
+                        # gpt boot and root partition
+                        # 1G boot, the rest for root (like lvm below)
+                        command(
+                            'sgdisk', '-n', '0:0:+1G', '-n', '0:0:0', loop_file.name
+                        )
+
+                    # create the loop device
+                    loop_device_name = command(
+                        'losetup', '-fP', '--show', loop_file.name,
+                        capture_stdout=True
+                    ).decode().strip()
+
+                    setup_exit_stack.callback(
+                        lambda: command('losetup', '-d', loop_device_name))
+
+                    bootpartition_name = loop_device_name + 'p1'
+                    rootpartition_name = loop_device_name + 'p2'
+
+                    if cfg.boot.luks_block is not None:
+                        luks_password = "sft.lol"
+                        command('echo', 'The LUKS password is: ', luks_password)
+                        command('cryptsetup', 'luksFormat', bootpartition_name, '-',
+                                stdin=f'{luks_password}')
+
+                        luks_mapped_name = 'stiefel-qemu-root'
+                        command('cryptsetup', 'open', '--type=luks', '--key-file=-',
+                                bootpartition_name, luks_mapped_name,
+                                stdin=f'{luks_password}')
+                        setup_exit_stack.callback(
+                            lambda: command('cryptsetup', 'close', luks_mapped_name))
+
+                        bootpart_luks = bootpartition_name
+                        bootpartition_name = f'/dev/mapper/{luks_mapped_name}'
+
+                        bootpart_luks_uuid = command(
+                            'blkid',
+                            '--output', 'value',
+                            '--match-tag', 'UUID',
+                            bootpart_luks,
+                            capture_stdout=True
+                        ).decode().strip()
+
+                    if 'lvm' in cfg.modules:
+                        command('pvcreate', bootpartition_name)
+                        pv_device = bootpartition_name
+                        setup_exit_stack.callback(
+                            lambda: command('pvremove', pv_device))
+
+                        vg_name = 'qemustiefel'
+                        command('vgcreate', vg_name, bootpartition_name)
+                        # use extreme caution here: this removes a vg!
+                        setup_exit_stack.callback(
+                            lambda: command('vgremove', '-y', vg_name))
+
+                        setup_exit_stack.callback(
+                            lambda: command('cp', '--sparse=always',
+                                            loop_file.name, tmppath('disk_image')))
+
+                        setup_exit_stack.callback(
+                            lambda: command('vgchange', '--activate=n', vg_name))
+
+                        # like the gpt partitions above
+                        command('lvcreate', '-n', 'boot', '-L', '1G', vg_name)
+                        command('lvcreate', '-n', 'root', '-L', '2G', vg_name)
+
+                        rootpartition_name = '/dev/mapper/qemustiefel-root'
+                        bootpartition_name = '/dev/mapper/qemustiefel-boot'
+
+                    else:
+                        setup_exit_stack.callback(
+                            lambda: command('mv', loop_file.name, tmppath('disk_image')))
+
+                    # create filesystem on the partition
+                    command('mkfs.vfat', '-F', '16', bootpartition_name)
+                    command('mkfs.ext4', rootpartition_name)
+
+                    # mount boot filesystem, fill it with files, and unmount it
+                    os.makedirs(tmppath('mntboot'), exist_ok=True)
+                    command('mount', bootpartition_name, tmppath('mntboot'))
+                    setup_exit_stack.callback(
+                        lambda: command('umount', tmppath('mntboot')))
+
+                    # mount root filesystem, so we can simulate a root-switch
+                    os.makedirs(tmppath('mntroot'), exist_ok=True)
+                    command('mount', rootpartition_name, tmppath('mntroot'))
+                    setup_exit_stack.callback(
+                        lambda: command('umount', tmppath('mntroot')))
+
+                    # this is the to-be-stiefeled kernel and initrd,
+                    # which will be provided to the stiefel-client.
+                    command('cp', args.kernel, tmppath('mntboot') + '/kernel')
+                    command('cp', args.initrd, tmppath('mntboot') + '/initrd')
+
+                    with open(tmppath('mntboot') + '/stiefelsystem.json', 'w') as fileobj:
+                        # cmdline options served by stiefel-server
+                        # to the booting client
+                        stiefel_cmdline = [
+                            "verbose",
+                        ]
+
+                        if 'lvm' in cfg.modules:
+                            client_root = "root=/dev/mapper/qemustiefel-root"
+                        else:
+                            client_root = "root=/dev/sda2"
+                        stiefel_cmdline.append(client_root)
+
+                        # TODO: actually should be 'initrd-dracut'
+                        if 'system-gentoo' in cfg.modules or 'system-arch-dracut' in cfg.modules:
+                            stiefel_cmdline.extend([
+                                "rd.info",
+                                "rd.shell",
+                                "rd.retry=15",
+                            ])
+                            if bootpart_luks_uuid:
+                                stiefel_cmdline.append(f"rd.luks.uuid={bootpart_luks_uuid}")
+                        elif bootpart_luks_uuid:
+                            raise NotImplementedError("luks unlocking not implemented for non-dracut initrd")
+
+                        if args.cmdline:
+                            stiefel_cmdline.append(args.cmdline)
+
+                        json.dump({
+                            "kernel": "kernel",
+                            "initrd": "initrd",
+                            "cmdline": stiefel_cmdline,
+                            "stiefelmodules": list(cfg.modules.keys()),
+                        }, fileobj)
+
+                    # dummy root filesystem
+                    command('mkdir', *[f"{tmppath('mntroot')}/{dirname}" for dirname in
+                                       ('etc', 'sbin', 'bin', 'sys', 'dev', 'proc', 'run', 'tmp', 'lib')])
+                    command('tee', tmppath('mntroot') + '/etc/os-release',
+                            stdin='NAME=Stiefelsystem\nID=sftstiefel\nPRETTY_NAME="SFT Stiefelsystem"\n')
+                    command('tee', tmppath('mntroot') + '/etc/fstab',
+                            stdin='# lol nope\n')
+
+                    install_binary(tmppath('mntroot'), '/bin/sh')
+                    command('tee', tmppath('mntroot') + '/sbin/init',
+                            stdin=("#!/bin/sh\n"
+                                   "echo 'sft technologies is proud to announce:'\n"
+                                   "echo 'your system is now booted!'\n"
+                                   "echo 'it should now work with your real system.'\n"
+                                   "echo 'if not, sft technologies is sorry for you.'\n"
+                                   "exec /bin/sh\n"
+                                   ""))
+                    command('chmod', '+x', tmppath('mntroot') + '/sbin/init')
+
+                if not args.use_existing_bridge:
+                    # setup the bridge that allows connection to the client VM
+                    command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
+                    command('ip', 'link', 'set', 'dev', 'br0', 'up')
+                    command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
+                    exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
+
+                # because inside qemu the loop-device is called sda
+                if bootpartition_name == loop_device_name + 'p1':
+                    bootpartition_name = "/dev/sda1"
+
+                if bootpart_luks == loop_device_name + 'p1':
+                    bootpart_luks = "/dev/sda1"
+
+                cmdline = [
+                    "stiefel_bootdisk=/dev/sda",
+                    f"stiefel_bootpart={bootpartition_name}",
+                ]
+                cmdline.append("systemd.unit=stiefel-server.service")
+
+                if cfg.boot.luks_block is None:
+                    # TODO: stiefel-server requires a password entry from cryptsetup
+                    # thus we need to launch it manually...
+                    pass
+
+                else:
+                    cmdline.append(
+                        f'stiefel_bootpart_luks={bootpart_luks}'
+                    )
+
+                qemu_args = [
+                    "-drive", f"file={tmppath('disk_image')},format=raw,if=none,id=systemhdd",
+                    "-device", "virtio-scsi-pci,id=scsi0",
+                    "-device", "scsi-hd,drive=systemhdd,bus=scsi0.0",
+                ]
+
+                # qemu boots this kernel
+                kernel = args.srv_kernel
+                initrd = args.srv_initrd
+
+            elif args.mode == 'test':
+                mac = "52:54:00:5f:70:04"
+
+                # network link makes sense to have even in the test vm
+                command('ip', 'link', 'add', 'name', 'br0', 'type', 'bridge')
+                command('ip', 'link', 'set', 'dev', 'br0', 'up')
+                command('ip', 'a', 'a', '10.4.5.1/24', 'dev', 'br0')
+                exit_stack.callback(lambda: command('ip', 'link', 'delete', 'br0'))
+
+                cmdline = []
+                qemu_args = []
+
+            else:
+                cli.error("mode must be 'client', 'server' or 'test'")
+
+            with open(tmppath('ifup-script'), 'w') as ifup_script:
+                ifup_script.writelines([
+                    "#!/bin/sh\n",
+                    "ip l set $1 up\n",
+                    f"ip l set dev $1 master {args.use_existing_bridge or 'br0'}\n",
+                    f"ip l set {args.use_existing_bridge or 'br0'} up\n",
+                ])
+            os.chmod(tmppath('ifup-script'), 0o755)
+
+            if args.forward_usb is not None:
+                try:
+                    vid, did = args.forward_usb.split(':')
+                    if len(vid) != 4 or len(did) != 4:
+                        raise ValueError()
+                except ValueError:
+                    cli.error("--forward-usb expects VID:DID")
+
+                qemu_args.extend([
+                    "-usb",
+                    "-device", f"usb-host,vendorid=0x{vid},productid=0x{did}"
+                ])
+
+            if args.extra_files is not None:
+                # pack the extra files into an CPIO archive
+                extra_cpio = command(
+                    "find . -depth -print0 | bsdcpio -0 -o -H newc | gzip -1",
+                    shell=True,
+                    cwd=args.extra_files,
+                    capture_stdout=True,
+                    env={"LANG": "C"},
+                )
+                with open(args.initrd, 'rb') as initrd_rfile:
+                    args.initrd = tmppath('initrd-concatenated')
+                    with open(args.initrd, 'wb') as initrd_wfile:
+                        initrd_wfile.write(initrd_rfile.read())
+                        initrd_wfile.write(extra_cpio)
+
+            if args.serialnetwork:
+                qemu_args.extend([
+                    "-serial",
+                    "telnet:localhost:4321,server,wait"
+                ])
+
+            if not args.graphical:
+                cmdline.insert(0, "console=ttyS0")
+                qemu_args.append("-nographic")
+                confirm = not (args.serialnetwork or args.skip_confirm)
+
+                print("remember: quit qemu with C-a x")
+            else:
+                qemu_args.extend([
+                    "-vga", "virtio",
+                ])
+                cmdline.append("vga=795")
+                confirm = False
+
+            qemu_base = [
+                "qemu-system-x86_64",
+                "-machine", "q35,accel=kvm",
+                "-cpu", "host",
+                "-m", str(3 * 1024 if args.mode == "server" else 5 * 1024),
+            ]
+            qemu_kernel = [
+                "-kernel", args.srv_kernel,
+                "-initrd", args.srv_initrd,
+            ]
+            qemu_netdev = [
+                "-netdev", f"tap,id=network0,script={tmppath('ifup-script')},downscript=no",
+            ]
+            qemu_devices = [
+                "-device", f"virtio-net,netdev=network0,mac={mac}",
+            ]
+            qemu_cmdline = [
+                "-append", " ".join(cmdline),
+            ]
+
+            # generate what the stiefel-client would kexec,
+            # so one can bypass the stiefelsystem in its entirety
+            # this is mostly useful for debugging the "real" initrd:
+            # it starts the machine just like after stiefelsystem
+            # kexec'd your real kernel+initramfs.
+            if args.print_client_kexec_invocation:
+                print("=" * 80)
+                print("invocation for qemu to directly execute the "
+                      "to-be-stiefeled client+initramfs:")
+                print()
+
+                # "simulate" the cmdline transfer from stiefel-server
+                inner_cmdline += " ".join(stiefel_cmdline)
+
+                # we should directly get these cmdline options from stiefel-client code!
+            # instead we have to copy it :(
+            if any(mod in ('system-gentoo', 'system-arch-dracut') for mod in cfg.modules):
+                inner_cmdline += (
+                    " ifname=stiefellink:" + client_mac +
+                    " ip=stiefellink:link6" +
+                    " netroot=nbd:[" + mac_to_v6ll(mac) + "%stiefellink]:stiefelblock:::-persist"
+                )
+
+            if bootpart_luks_uuid:
+                inner_cmdline += f" rd.luks.uuid={bootpart_luks_uuid}"
+
+            client_kexec = qemu_base + [
+                # handy for debugging, but not necessary
+                "-gdb tcp::1234 -serial telnet:localhost:4321,server,wait -nographic"
+            ] + [
+                "-kernel", args.kernel,
+                "-initrd", args.initrd,
+            ] + qemu_netdev + [
+                "-device", f"virtio-net,netdev=network0,mac={client_mac}",
+            ] + ["-append", f"'{inner_cmdline}'"]
+
+            print(" ".join(client_kexec))
+
+            input("[enter] to continue")
+
+            qemu_launch = (qemu_base + qemu_kernel + qemu_netdev +
+                           qemu_devices + qemu_cmdline + qemu_args)
+
+            # qemu will somehow disable linewrap
+            exit_stack.callback(lambda: command('setterm', '-linewrap', 'on'))
+
+            command(
+                *qemu_launch,
+                confirm=confirm,
+            )

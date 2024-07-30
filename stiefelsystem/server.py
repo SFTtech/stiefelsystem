@@ -1,0 +1,413 @@
+"""
+stiefelsystem server code.
+this tool waits for connections from stiefel-client.
+"""
+
+import aiohttp.web
+import base64
+import hashlib
+import io
+import json
+import multiprocessing
+import os
+import re
+import shutil
+import socket
+import subprocess
+import tarfile
+import time
+import argparse
+import configparser
+
+from .crypto import encrypt, decrypt
+from .util import ensure_root
+from .subcommand import Subcommand
+
+
+"""
+syntax for config file
+
+[stiefel]
+bootdisk = "/dev/disk/by-id/SOME-ID_HERE"
+files-path = "./files"
+
+the directory of files-path must contain
+ - stiefelsystem.json (normally found in /boot)
+ - aes-key
+ - kernel (as named in stiefelsystem.json)
+ - initramfs (as named in stiefelsystem.json)
+
+-> setup:
+- copy stiefelsystem.json, kernel, initramfs, aes-key files to ./files
+- run it
+"""
+
+
+class Server(Subcommand):
+    """
+    Run stiefelsystem in server mode.
+    """
+
+    @classmethod
+    def register(cls, cli):
+        cli.add_argument("-c", "--config",
+                         help="path to config file")
+        cli.add_argument("--no-nbd", action="store_true",
+                         help="do not generate a config file for nbd-server")
+        cli.add_argument("--add-cmd",
+                         help="arguments to add to the served cmdline")
+        cli.set_defaults(subcommand=cls)
+
+
+    def run(self, args, cfg):
+        """
+        create an initrd suitable for running stiefel-server or stiefel-client
+        """
+
+        ensure_root()
+
+        if args.config:
+            config = configparser.ConfigParser()
+            config.read(args.config)
+
+            cmdlineargs = {
+                "stiefel_bootdisk": json.loads(config.get("stiefel", "bootdisk")),
+                "stiefel_bootpart": ""
+            }
+            files_path = json.loads(config.get("stiefel", "files-path"))
+            keyfilepath = os.path.join(files_path, "aes-key")
+            nbd_config_path = os.path.join(files_path, "./nbd-config")
+
+            standalone = True
+
+        else:
+            # automatically turn the display off to save power
+            subprocess.check_call(['setterm', '--powerdown', '1', '--blank', '1'])
+
+            # the boot partition is mounted here
+            files_path = "/mnt/"
+
+            # read config from kernel cmdline
+            print(f"reading config from kernel cmdline")
+
+            with open('/proc/cmdline') as cmdlinefile:
+                cmdline = cmdlinefile.read()
+            cmdlineargs = {}
+            for entry in cmdline.strip().split():
+                try:
+                    key, value = entry.split('=', maxsplit=1)
+                    cmdlineargs[key] = value
+                except ValueError:
+                    continue
+
+            keyfilepath = "/aes-key"
+            nbd_config_path = "/etc/nbd-server/config"
+            standalone = False
+
+        print(f"config: {cmdlineargs}")
+
+        with open(keyfilepath, "rb") as keyfile:
+            KEY = keyfile.read()
+        KEY_HASH = hashlib.sha256(KEY).hexdigest().encode()
+
+
+        def discovery_server():
+            """
+            listens for and responds to discovery multicast messages,
+            thus providing its IP to interested clients.
+
+            designed to be run in a multiprocessing subprocess.
+            """
+            discovery_port = 61570  # determined by random.choice(range(49152, 2**16))
+            nameinfo_flags = socket.NI_NUMERICHOST
+
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(('', discovery_port))
+            # allow multicast loopback for development
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_LOOP, True)
+
+            print("discovery server: listening for packets")
+            while True:
+                data, addr = sock.recvfrom(1024)
+                if data != b'stiefelsystem:discovery:find-server:' + KEY_HASH:
+                    continue
+                host, _ = socket.getnameinfo(addr, nameinfo_flags)
+                print(f"{host!r} is looking for us")
+                try:
+                    sock.sendto(b'stiefelsystem:discovery:server-hello:' + KEY_HASH, addr)
+                except BaseException as exc:
+                    print(f"cannot send discovery reply: {exc!r}")
+
+
+        def continuous_network_setup():
+            """
+            continuously enables all network interfaces as they become available.
+
+            designed to be run in a multiprocessing subprocess.
+            """
+            print('running continuous network setup')
+            while True:
+                for netdev in os.listdir('/sys/class/net'):
+                    with open(f'/sys/class/net/{netdev}/operstate') as state_file:
+                        if state_file.read().strip() != 'down':
+                            continue
+                    print(f"setting link up: {netdev!r}")
+                    try:
+                        subprocess.check_call(['ip', 'link', 'set', 'up', netdev])
+                    except BaseException as exc:
+                        print(f"could not set link up: {exc!r}")
+
+                # instead of time.sleep(), we could use udev like in stiefel-autokexec
+                time.sleep(0.5 * 20)
+
+
+        # challenge for clients to prevent replay attacks
+        CHALLENGE = base64.b64encode(os.urandom(16)).decode('ascii')
+
+        BLKDEV = cmdlineargs["stiefel_bootdisk"]
+        BOOTPART_LUKS = cmdlineargs.get("stiefel_bootpart_luks")
+        BOOTPART = cmdlineargs["stiefel_bootpart"]
+        UNSECURE = bool(int(cmdlineargs.get("stiefel_unsecure", "0")))
+
+        if not standalone:
+            multiprocessing.Process(target=continuous_network_setup).start()
+        multiprocessing.Process(target=discovery_server).start()
+
+        # create NBD server config
+        nbdconfig = f"""
+        [generic]
+        [stiefelblock]
+        exportname = {BLKDEV}
+        copyonwrite = false
+        """
+
+        if args.no_nbd:
+            print("NBD config file is not written.\n Content would be:")
+            print(nbdconfig)
+        else:
+            with open(nbd_config_path, "w") as nbdconfigfile:
+                nbdconfigfile.write(nbdconfig)
+
+            # open NBD server
+            print(f"opening NBD server for {BLKDEV}")
+            if standalone:
+                def standalone_nbd():
+                    print("starting NBD serve in standalone mode")
+                    subprocess.check_call(['nbd-server', '-C', nbd_config_path])
+                multiprocessing.Process(target=standalone_nbd).start()
+            else:
+                subprocess.check_call(['systemctl', 'start', 'nbd-server'])
+
+
+        def read_binary(filename):
+            if not os.path.isfile(filename):
+                return None
+            with open(filename, 'rb') as fileobj:
+                return fileobj.read()
+
+
+        def find_boot_config():
+            print('trying to find boot config')
+
+            # kernel hints were manually created for the stiefelsystem
+            stiefelsystem_config = read_binary(os.path.join(files_path, "stiefelsystem.json"))
+
+            ret = {
+                'kernel': None,
+                'initrd': None,
+                'cmdline': None,
+                'stiefelmodules': None,
+            }
+
+            if stiefelsystem_config is not None:
+                stiefelsystem_config_json = json.loads(stiefelsystem_config)
+                ret['cmdline'] = " ".join(stiefelsystem_config_json['cmdline']).encode('utf-8')
+                ret['stiefelmodules'] = " ".join(stiefelsystem_config_json['stiefelmodules']).encode('utf-8')
+
+                kerneldef = stiefelsystem_config_json.get('kernel')
+                while kerneldef.startswith("/"):
+                    kerneldef = kerneldef[1:]
+                if kerneldef:
+                    ret['kernel'] = os.path.join(files_path, kerneldef).encode('utf-8')
+
+                initrddef = stiefelsystem_config_json.get('initrd')
+                while initrddef.startswith("/"):
+                    initrddef = initrddef[1:]
+                if initrddef:
+                    ret['initrd'] = os.path.join(files_path, initrddef).encode('utf-8')
+
+            # we're missing kernel invocation options, try to parse the bootloader config
+            if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
+                # try to determine kernel from syslinux config
+                syslinux_config = read_binary(os.path.join(files_path, "/syslinux/syslinux.cfg"))
+                if syslinux_config is not None:
+                    ret['kernel'] = os.path.join(
+                        os.path.join(files_path, "syslinux").encode('utf-8'),
+                        re.search(rb'^\s*LINUX\s+(\S+)\s', syslinux_config, re.M).group(1)
+                    )
+                    ret['initrd'] = os.path.join(
+                        os.path.join(files_path, "syslinux").encode('utf-8'),
+                        re.search(rb'^\s*INITRD\s+(\S+)\s', syslinux_config, re.M).group(1)
+                    )
+                    # TODO: cmdline parsing for syslinux cfg
+
+            if not (ret['kernel'] and ret['initrd'] and ret['cmdline']):
+                # try to determine kernel from grub config
+                grub_config = read_binary(os.path.join(files_path, "grub/grub.cfg"))
+                if grub_config is not None:
+                    kernelcmd = re.search(rb'^\s*linux\s+(\S+)((?:\s(?:\S+))*)\s*$', grub_config, re.M)
+                    if not kernelcmd:
+                        raise Exception('could not find kernel invocation in grub cfg')
+
+                    initrdcmd = re.search(rb'^\s*initrd\s+(\S+)\s', grub_config, re.M)
+                    if not initrdcmd:
+                        raise Exception('could not find initrd definition in grub cfg')
+
+                    ret['kernel'] = os.path.join(files_path, kernelcmd.group(1))
+                    ret['initrd'] = os.path.join(files_path, initrdcmd.group(1))
+                    ret['cmdline'] = os.path.join(files_path, kernelcmd.group(2))
+
+            for k, v in ret.items():
+                if not v:
+                    raise Exception(f'no configuration found for {k!r}')
+
+            if args.add_cmd:
+                ret['cmdline'] += b' ' + args.add_cmd.encode('utf-8')
+
+            return ret
+
+
+        async def generate_boot_tar(payload):
+            print("reading kernel and initrd")
+
+            challenge = payload['challenge']
+
+            if BOOTPART_LUKS:
+                # open luks device to fetch kernel and initrd from it
+                print("opening luks-crypted device...")
+                decrypt_mapped = 'stiefelboot'
+                while os.path.exists(f"/dev/mapper/{decrypt_mapped}"):
+                    decrypt_mapped += '_'
+
+                luks_pw_enc = base64.b64decode(payload['lukspw'])
+                luks_phrase = decrypt(luks_pw_enc)
+
+                subprocess.run(['cryptsetup', 'open', '--type=luks',
+                                '--key-file=-',
+                                BOOTPART_LUKS, decrypt_mapped],
+                               input=luks_phrase,
+                               check=True)
+                del luks_phrase
+
+                # force-discover the new pvs and lvs
+                if shutil.which('lvm'):
+                    subprocess.check_call(['pvscan'])
+                    subprocess.check_call(['lvscan'])
+                    subprocess.check_call(['udevadm', 'settle',
+                                           f'--exit-if-exists={BOOTPART}'])
+
+            try:
+                if not standalone:
+                    subprocess.check_call(['mount', '-oro', BOOTPART, files_path])
+                bootcfg = find_boot_config()
+
+                print(f"kernel: {bootcfg['kernel'].decode(errors='replace')!r}")
+                kernelblob = read_binary(bootcfg['kernel'])
+                print(f"initrd: {bootcfg['initrd'].decode(errors='replace')!r}")
+                initrdblob = read_binary(bootcfg['initrd'])
+
+            finally:
+                if not standalone:
+                    subprocess.check_call(['umount', files_path])
+
+            if BOOTPART_LUKS:
+                if shutil.which('lvm'):
+                    # deactivate all lvm child blockdevices
+                    blocktree = json.loads(subprocess.check_output(
+                        ['lsblk', '--json', f'/dev/mapper/{decrypt_mapped}']).decode())
+
+                    for block in blocktree['blockdevices'][0]['children']:
+                        if block['type'] == 'lvm':
+                            subprocess.check_call(
+                                ['lvchange', '-an', f"/dev/mapper/{block['name']}"])
+
+                subprocess.check_call(['cryptsetup', 'close', decrypt_mapped])
+
+            # create the response TAR in-memory
+            with io.BytesIO() as fileobj:
+                with tarfile.open(fileobj=fileobj, mode='w') as tar:
+                    tf = tarfile.TarInfo('kernel')
+                    tf.size = len(kernelblob)
+                    tar.addfile(tf, io.BytesIO(kernelblob))
+
+                    tf = tarfile.TarInfo('initrd')
+                    tf.size = len(initrdblob)
+                    tar.addfile(tf, io.BytesIO(initrdblob))
+
+                    # unique content so a client can detect replay attacks
+                    tf = tarfile.TarInfo('challenge')
+                    challenge = challenge.encode('utf-8')
+                    tf.size = len(challenge)
+                    tar.addfile(tf, io.BytesIO(challenge))
+
+                    cmdline = bootcfg['cmdline']
+                    tf = tarfile.TarInfo('cmdline')
+                    tf.size = len(cmdline)
+                    tar.addfile(tf, io.BytesIO(cmdline))
+
+                    stiefelmodulelist = bootcfg['stiefelmodules']
+                    tf = tarfile.TarInfo('stiefelmodules')
+                    tf.size = len(stiefelmodulelist)
+                    tar.addfile(tf, io.BytesIO(stiefelmodulelist))
+
+                fileobj.seek(0)
+                return fileobj.read()
+
+
+        async def server_infos(request):
+            return aiohttp.web.json_response({
+                "what": "stiefelsystem-server",
+                "args": cmdlineargs,
+                "key-hash": KEY_HASH.decode(),
+                "challenge": CHALLENGE,
+                "need-luks": bool(BOOTPART_LUKS),
+            })
+
+
+        async def get_boot_tar_noauth(request):
+            if UNSECURE:
+                return aiohttp.web.Response(body=generate_boot_tar({'challenge': ""}),
+                                            content_type="application/x-binary")
+
+            return aiohttp.web.Response(body="only boot.tar.aes is available",
+                                        status=403)
+
+
+        async def get_encrypted_boot_tar(request):
+            """
+            generate a boot tar which includes a random challenge the client
+            gave us so the archive is fresh and
+            the client can detect replay attacks of boot archives.
+            """
+            payload = await request.json()
+
+            plaintext = await generate_boot_tar(payload)
+
+            print('encrypting boot.tar.aes')
+            encrypted_blob = encrypt(plaintext)
+            print('encryption done')
+            del plaintext
+
+            return aiohttp.web.Response(body=encrypted_blob,
+                                        content_type="application/x-binary")
+
+
+        print("running HTTP server")
+
+        srv = aiohttp.web.Application()
+        srv.add_routes([aiohttp.web.get('/', server_infos)])
+        srv.add_routes([aiohttp.web.get('/boot.tar', get_boot_tar_noauth)])
+        srv.add_routes([aiohttp.web.post('/boot.tar.aes', get_encrypted_boot_tar)])
+
+        aiohttp.web.run_app(srv, host="::", port=4644)

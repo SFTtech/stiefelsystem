@@ -16,12 +16,12 @@ Needed components:
 ## How?
 
 Instead of unscrewing your SSD of a Laptop and putting it in a Desktop computer to start it there, the *Stiefelsystem* boots up the same system over network while fetching/storing all system files from the Laptop.
-You can of course still access an additional storage device in the Desktop computer.
+Since your system is really running on the desktop, you can of course still access an additional storage device and other hardware installed in the Desktop computer (VR Headsets, ...).
 
-To make this work, the "server system" (your Laptop) provides the operating system kernel and base system over the network to the "client system" (your Desktop computer).
-The base system on the client then connects to the server again and maps the whole storage device (the SSD, mapped with NBD), and then uses it as root filesystem.
+It works like this: The "server system" (your Laptop) provides the operating system kernel and bootstrapping system over the network to the "client system" (your Desktop computer).
+The bootstrapping system on the client then connects to the server again and mapps the whole storage device (your SSD, mapped with NBD), and then mounts it as root filesystem.
 
-Of course this works between any two devices.
+Now you have one computer serving as network disk, the other having that network disk mounted and running on it.
 
 
 ## Communication Flow
@@ -32,7 +32,7 @@ time
 |
 |
 | laptop computer                           desktop computer
-| regular OS                            boot from usb stick or PXE
+| regular OS                            boot live system from USB or PXE
 |    |                                            |
 | autokexec service                               |
 v    |              discovery message             |
@@ -71,32 +71,26 @@ More information can be found in our [more detailed documentation](doc/procedure
 
 ## Setup
 
-Basic steps (commands below):
+Gist:
 
-- You create a Debian-based OS image which is booted on client and server
-- This image is flashed on an USB drive, which is used to boot the client
-- The same system is kexec'd on your server to serve the root disk
+- We create a debian based boostrapping system image
+- We flash this image on an USB drive, which is used to boot the client
+- The same boostrapping image is kexec'd on your server to serve the root disk over network
 
+Steps:
+- visit the config file, but all defaults should be good to go
+  - the suitable defaults should be set by your Linux distribution in this file!
+- `sudo stiefelctl update`: update the bootstrap image
+- `sudo stiefelctl create-usbdrive /dev/sdxxx`: flash client boot usb thumbdrive with bootstrap image
+- `sudo stiefelctl server`: wait until client connects to serve disks
+  - or, enable/run `stiefelsystem.service` which just runs `stiefelctl server`
 
-The scripts in this repo automate all of those task (apart from the thinking...)
+## Development
 
-- Make shure you have all dependencies installed
-  * `cp config-example.yaml config.yaml` and edit it to your wishes.
-  * Select the modules that are appropriate for your system.
-- create the stiefelsystem ramdisk (for use by server and client)
-  * `sudo ./create-initrd` prepares the debian-based initrd, as a folder and as an archive
-  * You can check out the initrd with `sudo ./test-nspawn`
-  * You can check out server and client interactions with `sudo ./test-qemu server` and `sudo ./test-qemu client`
+- `stiefelctl test-nspawn` to test the stiefelOS image
+- `stiefelctl test-qemu <client|server>` to test client-server interactions with virtual machines
 
-- Setup the `stiefel-autokexec` service on the laptop (and provide it with the ramdisk and config) and setup the nbd rootfs hook in your initfs on your OS
-  * `sudo ./setup-server-os` sets up your system, asking for permission for every operation. It sets up:
-    * The `stiefel-autokexec.service`
-    * Initrd hooks that can mount your root disk from the network
-    * A network manager rule to disable control of the network partition network device
-- Create a USB boot drive
-  * `sudo ./setup-client-usbdrive /dev/sdxxx` creates the usb drive
-
-- To reset the AES key, run `rm aes-key` (newly created ramdisks won't work with older ones)
+- To your secret key, remove `aes-key` at the location specified in the config.
 
 
 # Why don't you use X in the tech stack?
@@ -115,23 +109,16 @@ We'd really like to use Y, but you haven't implemented support yet.
 
 # Things to improve
 
-## Creation scripts
-
-- Unify create-initrd-nspawn and create-initrd-cpio
-- Allow skipping some of the more time-consuming parts of create-initrd-nspawn
-- setup-client-usbdrive: add a script to launch the client script in any linux's userland
-
 ## Network setup
 
 - Allow enabling jumbo frames (8192 bytes?) for higher throughput with bigger files
 - Run a DHCP server on the server (possibly also with PXE support) and support DHCP config on the client
-- Allow server to request earlyboot crypto passphrase from the client in its / HTTP GET answer
 
-## Client script
+## StiefelOS Client
 
 - Search for the server on all network interfaces in parallel, with multiprocessing and network namespaces
 
-## Server script
+## StiefelOS Server
 
 - Produce warning beeps if not on AC power, especially when battery is low
 - Re-setup interfaces as they disappear/appear

@@ -10,3 +10,9 @@ __pycache__
 *.pyo
 *.pdf
 *.temp
+*.egg-info
+/.git
+
+/build
+/dist
+/venv

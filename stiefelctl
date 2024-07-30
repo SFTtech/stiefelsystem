@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+
+"""
+stiefelsystem control tool
+"""
+
+import stiefelsystem.main
+
+
+if __name__ == "__main__":
+    stiefelsystem.main.main()
