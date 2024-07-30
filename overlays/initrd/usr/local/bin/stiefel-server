@@ -272,9 +272,14 @@ def find_boot_config():
             if not initrdcmd:
                 raise Exception('could not find initrd definition in grub cfg')
 
-            ret['kernel'] = os.path.join(files_path, kernelcmd.group(1))
-            ret['initrd'] = os.path.join(files_path, initrdcmd.group(1))
-            ret['cmdline'] = os.path.join(files_path, kernelcmd.group(2))
+            ret['kernel'] = os.path.join(files_path.encode('utf-8'), kernelcmd.group(1).lstrip(b"/"))
+            ret['initrd'] = os.path.join(files_path.encode('utf-8'), initrdcmd.group(1).lstrip(b"/"))
+            ret['cmdline'] = kernelcmd.group(2)
+            ret['stiefelmodules'] = b"system-debian"
+            # TODO: hardcoding stiefelmodules to 'system-debian' is ugly, but acceptable for now, as
+            # the stiefel-client treats system-debian and system-arch the same way and all the other
+            # currently supported options (system-gentoo and system-arch-dracut) get a JSON config
+            # via setup-server-os anyway, so this codepath should not run for those system flavours.
 
     for k, v in ret.items():
         if not v:

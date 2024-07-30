@@ -105,7 +105,7 @@ def kexec_on_server_discovery_message(aes_key_hash, hmac_key):
                 print(f'bad HMAC signature for autokexec-reboot challenge')
 
 
-if not config['autokexec-triggers']['mac_detection'] and not config['autokexec-triggers']['mac_detection']:
+if not config['autokexec-triggers']['broadcast'] and not config['autokexec-triggers']['mac_detection']:
     print("no autokexec method enabled. Quitting")
     raise SystemExit(1)
 
