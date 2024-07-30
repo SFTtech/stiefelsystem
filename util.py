@@ -269,7 +269,7 @@ class FileEditor:
         if not os.path.exists(parentdir):
             warn(f'creating directory {parentdir}')
             if not get_consent():
-                return
+                return False
             os.makedirs(parentdir)
 
         if os.path.exists(self.write_to):
@@ -283,7 +283,7 @@ class FileEditor:
                 # nothing to do
                 print(f'{self.write_to!r}: unchanged')
                 self.ensure_x_flag(need_consent=True)
-                return
+                return False
 
             backup_to = self.write_to + '-stiefelbup'
             warn(f'{self.write_to!r}: overwriting; backing up old version to {backup_to!r}')
@@ -295,7 +295,7 @@ class FileEditor:
             backup_to = None
 
         if not get_consent():
-            return
+            return False
 
         if backup_to is not None:
             os.rename(self.write_to, backup_to)
@@ -304,6 +304,8 @@ class FileEditor:
             fileobj.write(self.data)
 
         self.ensure_x_flag(need_consent=False)
+
+        return True
 
     def ensure_x_flag(self, need_consent):
         if self.executable != os.access(self.write_to, os.X_OK):
@@ -440,6 +442,14 @@ def ensure_unit_enabled(name):
     """
     if command('systemctl', 'is-enabled', name, get_retval=True) != 0:
         command('systemctl', 'enable', name, confirm=True)
+
+
+def restart_unit(name):
+    """
+    Restarts the given systemd unit.
+    Also works for units that are not yet running.
+    """
+    command('systemctl', 'restart', name, confirm=True)
 
 
 def download(url, timeout=20):
